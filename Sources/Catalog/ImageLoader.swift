@@ -65,7 +65,7 @@ private final class ThumbnailMemoryCache {
 /// build the directory index once rather than rescanning it on every scroll.
 private final class ThumbnailDiskCache {
     private struct Entry { let bytes: Int; var access: Date }
-    private let queue = DispatchQueue(label: "Write.thumbnail-disk", qos: .utility)
+    private let queue = DispatchQueue(label: "Catalog.thumbnail-disk", qos: .utility)
     private let directory: URL
     private let limit: Int
     private var entries: [String: Entry] = [:]
@@ -153,10 +153,10 @@ final class ImageLoader {
          diskLimit: Int = ImageLoader.thumbnailDiskLimit) {
         memory = ThumbnailMemoryCache(limit: memoryLimit)
         let directory = cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.grant.write/Thumbnails-v1", isDirectory: true)
+            .appendingPathComponent("com.grant.catalog/Thumbnails-v1", isDirectory: true)
         disk = ThumbnailDiskCache(directory: directory, limit: diskLimit)
-        thumbnails.name = "Write.thumbnails"; thumbnails.maxConcurrentOperationCount = 2; thumbnails.qualityOfService = .userInitiated
-        originals.name = "Write.originals"; originals.maxConcurrentOperationCount = 1; originals.qualityOfService = .userInitiated
+        thumbnails.name = "Catalog.thumbnails"; thumbnails.maxConcurrentOperationCount = 2; thumbnails.qualityOfService = .userInitiated
+        originals.name = "Catalog.originals"; originals.maxConcurrentOperationCount = 1; originals.qualityOfService = .userInitiated
         pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
         pressure?.setEventHandler { [weak self] in self?.memory.removeAll() }
         pressure?.resume()

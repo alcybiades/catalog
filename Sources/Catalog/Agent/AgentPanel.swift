@@ -387,7 +387,7 @@ private struct ItemView: View {
         }
     }
 
-    /// Light Markdown in Write's colors: bold white, italics lavender, code amber.
+    /// Light Markdown in the editor's colors: bold white, italics lavender, code amber.
     static func styled(_ markdown: String) -> AttributedString {
         // Inline-only parsing keeps line breaks; draw list markers as bullets.
         let source = markdown.replacingOccurrences(of: #"(?m)^(\s*)[*+-] (?=\S)"#, with: "$1• ", options: .regularExpression)

@@ -2,13 +2,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "Write",
+    name: "Catalog",
     // Liquid Glass and the Wikipedia reader's SwiftUI need macOS 26.
     platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(
-            name: "Write",
-            path: "Sources/Write",
+            name: "Catalog",
+            path: "Sources/Catalog",
             swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]

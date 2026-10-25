@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Write</string>
+    <string>Catalog</string>
     <key>CFBundleDisplayName</key>
-    <string>Write</string>
+    <string>Catalog</string>
     <key>CFBundleExecutable</key>
-    <string>Write</string>
+    <string>Catalog</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.grant.write</string>
+    <string>com.grant.catalog</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>

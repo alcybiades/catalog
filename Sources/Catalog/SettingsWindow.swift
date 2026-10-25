@@ -65,7 +65,7 @@ final class SettingsWindowController: NSObject {
     }
 
     private func build() {
-        let panel = WriteWindow(
+        let panel = CatalogWindow(
             contentRect: NSRect(x: 0, y: 0, width: 455, height: 530),
             styleMask: [.titled, .fullSizeContentView, .closable],
             backing: .buffered,

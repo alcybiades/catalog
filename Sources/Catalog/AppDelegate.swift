@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppState.migrateFromWrite()
         // Capture before any window exists: refreshChrome() overwrites the
         // stored session as windows come up.
         let savedWindows = AppState.defaults.array(forKey: "sessionWindows") as? [[String: Any]] ?? []

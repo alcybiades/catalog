@@ -165,7 +165,7 @@ enum WorkspaceItemKind {
         var name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != ".", name != "..",
               !name.contains("/"), !name.contains(":"), !name.contains("\0"), !name.hasPrefix(".") else {
-            throw NSError(domain: "Write", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            throw NSError(domain: "Catalog", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "Enter a visible file or folder name without slashes or colons."])
         }
         if self == .markdown && !["md", "markdown"].contains((name as NSString).pathExtension.lowercased()) {

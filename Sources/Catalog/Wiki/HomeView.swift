@@ -57,7 +57,7 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
                 .padding(.bottom, 2)
-            Text(isLauncher ? "Write" : "Encyclopedia")
+            Text(isLauncher ? "Catalog" : "Encyclopedia")
                 .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)

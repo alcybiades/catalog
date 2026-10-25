@@ -5,10 +5,10 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     /// Posted on the main thread just before the assistant writes `url`, so
     /// windows can flush unsaved edits to that file first.
-    static let agentWillModifyFile = Notification.Name("WriteAgentWillModifyFile")
+    static let agentWillModifyFile = Notification.Name("CatalogAgentWillModifyFile")
     /// Posted on the main thread after the assistant changed files. userInfo:
     /// "urls" ([URL]) and, for a move, "from" (URL) → "to" (URL).
-    static let agentDidModifyFiles = Notification.Name("WriteAgentDidModifyFiles")
+    static let agentDidModifyFiles = Notification.Name("CatalogAgentDidModifyFiles")
 }
 
 /// What the assistant can see of the window when a message is sent.
