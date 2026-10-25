@@ -148,7 +148,8 @@ enum FileReference {
 }
 
 enum FileKind {
-    case markdown, image, unsupported, folder
+    /// `wiki` tabs hold a Wikipedia page rather than a file; classify never returns it.
+    case markdown, image, unsupported, folder, wiki
     static func classify(_ url: URL) -> FileKind {
         if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { return .folder }
         if ["md", "markdown", "txt"].contains(url.pathExtension.lowercased()) { return .markdown }

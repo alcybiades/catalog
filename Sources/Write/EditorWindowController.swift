@@ -38,7 +38,27 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var selectionToolbar: SelectionToolbar!
     private var autosaveTimer: Timer?
     private var savedFlashTimer: Timer?
+    private var outlineTimer: Timer?
     private var lastAutosave = Date()
+
+    // Pages beyond files: Wikipedia tabs host SwiftUI under the tab strip,
+    // notes and images get the glass action cluster, and the assistant
+    // lives in a right sidebar.
+    let chrome = WindowChrome()
+    let agent = AgentSession()
+    private var container: NSView!
+    private let contentGuide = NSLayoutGuide()
+    private var pageActions: PageHostingView<PageActionsView>!
+    private var backButton: PageHostingView<WikiBackButton>!
+    private var titlePill: PageHostingView<WikiTitlePill>!
+    private let pageGlass = PageGlassBackdrop()
+    private let agentContainer = NSView()
+    private var agentHost: PageHostingView<AgentPanel>!
+    private let agentDivider = SidebarDivider()
+    private var agentWidthConstraint: NSLayoutConstraint!
+    private(set) var agentOpen = false
+    private(set) var agentWidth: CGFloat = 380
+    private var reloadingFromDisk = false
 
     init(documents: [Document] = [], app: AppDelegate?) {
         self.documents = documents.isEmpty ? [Document()] : documents
@@ -66,6 +86,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private func buildUI() {
         guard let window else { return }
         let container = applyTerminalBackdrop(to: window)
+        self.container = container
+        container.addLayoutGuide(contentGuide)
 
         let layoutManager = CodeBackgroundLayoutManager()
         let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
@@ -120,12 +142,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         scrollView.verticalScroller?.knobStyle = .light
         scrollView.documentView = textView
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        // Notes scroll up under the tab strip and the glass; keep the
+        // scroller itself below the tabs.
+        scrollView.scrollerInsets = NSEdgeInsets(top: PageMetrics.tabBarHeight, left: 0, bottom: 0, right: 0)
 
         tabBar = TabBarView()
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.onSelect = { [weak self] index in self?.switchTab(to: index) }
         tabBar.onClose = { [weak self] index in self?.closeTab(at: index) }
-        tabBar.onNewTab = { [weak self] in self?.newTab(nil) }
+        tabBar.onNewTab = { [weak self] anchor in self?.showNewTabMenu(from: anchor) }
         tabBar.onDetach = { [weak self] index, screenPoint in
             guard let self else { return }
             app?.detachTab(from: self, index: index, to: screenPoint)
@@ -212,30 +237,88 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.onOpenReference = { [weak self] destination in self?.follow(destination) }
         textView.onOpenWikiLink = { [weak self] target in self?.followWikiLink(target) }
         textView.wikiLinkResolver = { [weak self] target in self?.resolveWikiLink(target) }
-        container.addSubview(tabBar)
+        pageActions = PageHostingView(rootView: PageActionsView(chrome: chrome))
+        pageActions.sizingOptions = [.intrinsicContentSize]
+        backButton = PageHostingView(rootView: WikiBackButton(chrome: chrome))
+        backButton.sizingOptions = [.intrinsicContentSize]
+        titlePill = PageHostingView(rootView: WikiTitlePill(chrome: chrome))
+        titlePill.sizingOptions = [.intrinsicContentSize]
+        titlePill.passesThrough = true
+        agentHost = PageHostingView(rootView: AgentPanel(session: agent) { [weak self] in self?.toggleAgent(nil) })
+        agentHost.sizingOptions = []
+        agentContainer.wantsLayer = true
+        agentContainer.layer?.masksToBounds = true
+        for view in [pageGlass, pageActions!, backButton!, titlePill!, agentHost!, agentContainer, agentDivider] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        agentContainer.addSubview(agentHost)
+        agentDivider.onResize = { [weak self] x in
+            guard let self, let window = self.window else { return }
+            self.agentWidth = max(280, min(window.frame.width - x, 720))
+            self.updateAgentPanel(); self.app?.sessionChanged()
+        }
+        configureAgent()
+
+        // Back to front: pages, then the glass and its controls, then the
+        // tab strip over everything, then the assistant beside it all.
         container.addSubview(scrollView)
+        container.addSubview(pageGlass)
+        container.addSubview(pageActions)
+        container.addSubview(backButton)
+        container.addSubview(titlePill)
+        container.addSubview(tabBar)
         container.addSubview(statusPill)
+        container.addSubview(agentContainer)
+        container.addSubview(agentDivider)
+        agentWidthConstraint = agentContainer.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
+            contentGuide.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            contentGuide.trailingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
+            contentGuide.topAnchor.constraint(equalTo: container.topAnchor),
+            contentGuide.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            agentContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            agentContainer.topAnchor.constraint(equalTo: container.topAnchor),
+            agentContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            agentWidthConstraint,
+            agentHost.leadingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
+            agentHost.topAnchor.constraint(equalTo: agentContainer.topAnchor),
+            agentHost.bottomAnchor.constraint(equalTo: agentContainer.bottomAnchor),
+            agentHost.trailingAnchor.constraint(equalTo: agentContainer.trailingAnchor),
+            agentDivider.centerXAnchor.constraint(equalTo: agentContainer.leadingAnchor),
+            agentDivider.widthAnchor.constraint(equalToConstant: 6),
+            agentDivider.topAnchor.constraint(equalTo: container.topAnchor),
+            agentDivider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            pageGlass.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+            pageGlass.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
+            pageGlass.topAnchor.constraint(equalTo: container.topAnchor),
+            pageGlass.heightAnchor.constraint(equalToConstant: PageMetrics.glassHeight),
+            pageActions.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -PageMetrics.inset),
+            pageActions.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
+            backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            titlePill.centerXAnchor.constraint(equalTo: contentGuide.centerXAnchor),
+            titlePill.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            titlePill.widthAnchor.constraint(lessThanOrEqualTo: contentGuide.widthAnchor, constant: -2 * (PageMetrics.control + 160)),
             tabBar.topAnchor.constraint(equalTo: container.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            tabBar.heightAnchor.constraint(equalToConstant: TabBarView.cornerPadding + 31 + 8),
-            scrollView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
+            tabBar.heightAnchor.constraint(equalToConstant: PageMetrics.tabBarHeight),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             sidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: container.topAnchor), sidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor), sidebarWidthConstraint,
             divider.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -3), divider.widthAnchor.constraint(equalToConstant: 6),
             divider.topAnchor.constraint(equalTo: sidebar.topAnchor), divider.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            preview.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor), preview.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-            preview.topAnchor.constraint(equalTo: scrollView.topAnchor), preview.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+            preview.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor), preview.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
+            preview.topAnchor.constraint(equalTo: tabBar.bottomAnchor), preview.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             statusLabel.leadingAnchor.constraint(equalTo: statusPill.leadingAnchor, constant: 9),
             statusLabel.trailingAnchor.constraint(equalTo: statusPill.trailingAnchor, constant: -9),
             statusLabel.topAnchor.constraint(equalTo: statusPill.topAnchor, constant: 3),
             statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -3),
-            statusPill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            statusPill.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -20),
             statusPill.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
         ])
 
@@ -264,16 +347,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         } else {
             window.center()
         }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(agentWillModifyFile(_:)), name: .agentWillModifyFile, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(agentDidModifyFiles(_:)), name: .agentDidModifyFiles, object: nil)
+
         updateSidebar()
+        updateAgentPanel()
         textView.rehighlight()
         let length = (currentDocument.storage.string as NSString).length
         textView.setSelectedRange(NSIntersectionRange(currentDocument.selection, NSRange(location: 0, length: length)))
         updateInsets()
         refreshChrome()
-        window.makeFirstResponder(textView)
+        focusCurrentPage()
     }
 
     func windowWillClose(_ notification: Notification) {
+        agent.stopAll()
+        outlineTimer?.invalidate()
+        documents.forEach(retire)
         preview.suspend()
         textView.dismissReferences()
         autosaveTimer?.invalidate()
@@ -295,6 +387,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     @objc private func scrolled() {
         selectionToolbar.noteSelectionChanged()
+        updatePageGlass()
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -308,7 +401,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Symmetric breathing room: the gap above the title (below the tab
         // bar) equals the gap between the title and the body text.
         let titleGap = Theme.fontSize * 0.9
-        let titleTop = titleGap
+        // The scroll view starts at the window's top edge, under the tabs.
+        let titleTop = PageMetrics.tabBarHeight + titleGap
         // Space above the body text (title area) and below it (the plain
         // padding plus clearance so the last line never sits under the
         // status pill in the bottom-right corner).
@@ -365,12 +459,42 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.setSelectedRange(sel.location <= length ? sel : NSRange(location: 0, length: 0))
         textView.scrollRangeToVisible(textView.selectedRange())
         refreshChrome()
-        window?.makeFirstResponder(doc.kind == .markdown ? textView : preview)
+        focusCurrentPage()
+    }
+
+    private func focusCurrentPage() {
+        switch currentDocument.kind {
+        case .markdown: window?.makeFirstResponder(textView)
+        case .wiki: window?.makeFirstResponder(currentDocument.wiki?.hostView)
+        default: window?.makeFirstResponder(preview)
+        }
     }
 
     @objc func newTab(_ sender: Any?) {
         documents.append(Document())
         switchTab(to: documents.count - 1)
+    }
+
+    @objc func newWikiTab(_ sender: Any?) {
+        documents.append(Document(wiki: WikiPage(style: .wikipedia)))
+        switchTab(to: documents.count - 1)
+    }
+
+    /// The [+] menu: a note or a Wikipedia page.
+    private func showNewTabMenu(from anchor: NSView) {
+        let menu = NSMenu()
+        for (title, symbol, action, key, modifiers) in [
+            ("New Note", "square.and.pencil", #selector(newTab(_:)), "t", NSEvent.ModifierFlags.command),
+            ("New Wikipedia Page", "book.closed", #selector(newWikiTab(_:)), "t", [.command, .shift]),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = self
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        menu.appearance = NSAppearance(named: .darkAqua)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.isFlipped ? anchor.bounds.maxY + 6 : -6), in: anchor)
     }
 
     @objc func closeTab(_ sender: Any?) {
@@ -386,7 +510,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         flushAutosave()
         // resolveUnsavedChanges may have switched `current` onto `index`.
-        documents.remove(at: index)
+        retire(documents.remove(at: index))
         if current > index { current -= 1 }
         current = min(current, documents.count - 1)
         reattachCurrent()
@@ -414,7 +538,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.rehighlight()
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         refreshChrome()
-        window?.makeFirstResponder(currentDocument.kind == .markdown ? textView : preview)
+        focusCurrentPage()
     }
 
     private func recordTabActivation() {
@@ -446,19 +570,36 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         switchTab(to: (current - 1 + documents.count) % documents.count)
     }
 
-    private func refreshChrome() {
-        let editable = currentDocument.kind == .markdown
+    private func refreshChrome(typing: Bool = false) {
+        let doc = currentDocument
+        let editable = doc.kind == .markdown
+        let isWiki = doc.kind == .wiki
         scrollView.isHidden = !editable
-        preview.isHidden = editable
+        preview.isHidden = editable || isWiki
         statusPill.isHidden = !editable
         textView.isEditable = editable
         titleView.isEditable = editable
+        showWikiHost(for: doc)
         if !editable {
             selectionToolbar.hide()
-            preview.show(currentDocument, root: workspace?.root, mediaMode: mediaMode, from: previewOrigin)
+            if isWiki { preview.suspend() } else {
+                preview.show(doc, root: workspace?.root, mediaMode: mediaMode, from: previewOrigin)
+            }
         } else { preview.suspend() }
+        // Notes and images get the same glass cluster as Wikipedia pages.
+        if chrome.page !== doc.wiki { chrome.page = doc.wiki }
+        updatePageGlass()
+        if typing {
+            outlineTimer?.invalidate()
+            outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+                self?.updatePageActions()
+            }
+        } else {
+            updatePageActions()
+        }
         tabBar.update(tabs: documents.map { ($0.name, $0.edited) }, selected: current)
         updateStatus()
+        updateAgentContext()
         app?.sessionChanged()
     }
 
@@ -466,9 +607,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func textDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextView) === textView else { return }
+        guard !reloadingFromDisk else { return }
         currentDocument.edited = true
         window?.isDocumentEdited = true
-        refreshChrome()
+        refreshChrome(typing: true)
         scheduleAutosave()
     }
 
@@ -515,6 +657,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let words = currentDocument.storage.string
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
         statusLabel.stringValue = "\(currentDocument.name) · \(words)w"
+        guard currentDocument.kind != .wiki else {
+            window?.title = currentDocument.name
+            return
+        }
         window?.title = currentDocument.name
         if window?.firstResponder !== titleView {
             titleView.string = currentDocument.displayTitle
@@ -629,6 +775,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func windowDidBecomeKey(_ notification: Notification) {
         sidebar.refresh()
+        // Pick up edits made elsewhere (another app, an agent in a terminal)
+        // to notes that have no unsaved changes here.
+        for doc in documents where doc.kind == .markdown && !doc.edited { reloadFromDisk(doc) }
     }
 
     @objc func closeFolder(_ sender: Any?) {
@@ -715,12 +864,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                                                            in: textView.string as NSString) else {
             NSSound.beep(); return
         }
-        textView.setSelectedRange(NSRange(location: range.location, length: 0))
-        // Reveal some of what follows the heading, then pin the heading itself.
-        textView.scrollRangeToVisible(NSRange(location: min(NSMaxRange(range) + 400,
-                                                            (textView.string as NSString).length), length: 0))
-        textView.scrollRangeToVisible(range)
-        window?.makeFirstResponder(textView)
+        scrollToLocation(range.location)
     }
 
     @discardableResult
@@ -734,18 +878,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let kind = FileKind.classify(url)
         if kind == .folder {
             restoreWorkspace(root: url, collapsed: false, width: sidebarWidth, media: false)
-            documents.append(Document(url: url))
             app?.addRecentFile(url)
-            switchTab(to: documents.count - 1)
+            place(Document(url: url), replacingPlaceholder: true)
             return true
         }
         if forceNewTab {
             if focus(url: url) { return true }
         } else if let app, app.focusExisting(url: url) { return true }
         if kind != .markdown {
-            documents.append(Document(url: url))
             app?.addRecentFile(url)
-            switchTab(to: documents.count - 1)
+            place(Document(url: url), replacingPlaceholder: !forceNewTab)
             return true
         }
         // If any window already has it, focus that tab instead.
@@ -755,14 +897,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         app?.addRecentFile(url)
         let doc = markdownDocument(url: url, content: content)
-        // Reuse the current tab when it's an empty, untouched untitled buffer.
-        if !forceNewTab, currentDocument.url == nil, !currentDocument.edited, currentDocument.storage.length == 0 {
-            documents[current] = doc
-            switchTab(to: current)
-        } else {
-            documents.append(doc)
-            switchTab(to: documents.count - 1)
-        }
+        // Reuse the current tab when it's an untouched untitled note or home page.
+        place(doc, replacingPlaceholder: !forceNewTab)
         return true
     }
 
@@ -801,7 +937,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         commitTitleIfEditing()
         app?.addRecentFile(url)
-        if let index = mostRecentSidebarTab {
+        // Untitled notes stay open (they aren't associated with the folder),
+        // but an idle home page gives way to the first thing opened.
+        if currentDocument.wiki?.style == .home, currentDocument.isPlaceholder {
+            place(doc, replacingPlaceholder: true)
+        } else if let index = mostRecentSidebarTab {
             if index != current { switchTab(to: index) }
             flushAutosave()
             documents[index] = doc
@@ -814,10 +954,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func restoreTab(url: URL) {
         if FileKind.classify(url) == .folder {
-            let doc = Document(url: url)
-            if documents.count == 1, currentDocument.url == nil, currentDocument.storage.length == 0, !currentDocument.edited {
-                documents[0] = doc; switchTab(to: 0)
-            } else { documents.append(doc); switchTab(to: documents.count - 1) }
+            place(Document(url: url), replacingPlaceholder: documents.count == 1)
         } else { open(url: url) }
     }
 
@@ -827,8 +964,21 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         doc.customTitle = entry.title
         doc.recoveryID = entry.id
         doc.edited = true
-        // Reuse the current tab when it's an empty, untouched untitled buffer.
-        if currentDocument.url == nil, !currentDocument.edited, currentDocument.storage.length == 0 {
+        place(doc, replacingPlaceholder: true)
+    }
+
+    /// Restores a Wikipedia tab from the saved session.
+    func restoreWikiTab(title: String) {
+        let page = WikiPage(style: .wikipedia)
+        if !title.isEmpty { page.open(title) }
+        place(Document(wiki: page), replacingPlaceholder: true)
+    }
+
+    /// Shows `doc` in the current tab when that tab is a placeholder (an
+    /// untouched untitled note or home page), otherwise in a new tab.
+    private func place(_ doc: Document, replacingPlaceholder: Bool) {
+        if replacingPlaceholder, currentDocument.isPlaceholder {
+            retire(currentDocument)
             documents[current] = doc
             switchTab(to: current)
         } else {
@@ -961,6 +1111,360 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         return resolveAllUnsavedChanges()
     }
 
+    // MARK: - Pages
+
+    /// Shows the current tab's hosting view if it is a Wikipedia page,
+    /// installing it in this window on first use (or after a detach).
+    private func showWikiHost(for doc: Document) {
+        for other in documents where other !== doc { other.wiki?.hostView?.isHidden = true }
+        guard let page = doc.wiki else { return }
+        let host: PageHostingView<WikiTabView>
+        if let existing = page.hostView as? PageHostingView<WikiTabView> {
+            host = existing
+        } else {
+            host = PageHostingView(rootView: WikiTabView(page: page))
+            host.sizingOptions = []
+            host.translatesAutoresizingMaskIntoConstraints = false
+            page.hostView = host
+        }
+        if host.superview !== container {
+            configure(page)
+            container.addSubview(host, positioned: .below, relativeTo: pageGlass)
+            NSLayoutConstraint.activate([
+                host.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+                host.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
+                host.topAnchor.constraint(equalTo: container.topAnchor),
+                host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+        }
+        host.isHidden = false
+    }
+
+    /// Binds a page's callbacks to this window.
+    private func configure(_ page: WikiPage) {
+        page.onChange = { [weak self] in self?.refreshChrome() }
+        page.onChromeChange = { [weak self, weak page] in
+            guard let self, self.currentDocument.wiki === page else { return }
+            self.updatePageGlass()
+        }
+        page.homeActions = HomeActions(
+            newNote: { [weak self, weak page] in
+                guard let self, let index = self.documents.firstIndex(where: { $0.wiki === page }) else { return }
+                self.retire(self.documents[index])
+                self.documents[index] = Document()
+                self.switchTab(to: index)
+            },
+            openFolder: { [weak self] in self?.openFolder(nil) },
+            openFile: { [weak self] in self?.openDocument(nil) },
+            openRecent: { [weak self] url in self?.open(url: url) },
+            recentFiles: { [weak self] in self?.app?.recentFileURLs ?? [] })
+    }
+
+    /// Tears down a closing tab's page view (it retains its page).
+    private func retire(_ doc: Document) {
+        guard let page = doc.wiki, let host = page.hostView else { return }
+        host.removeFromSuperview()
+        page.hostView = nil
+    }
+
+    /// The glass behind the tabs and bar shows while content is beneath
+    /// them; the bar's controls follow the page on screen.
+    private func updatePageGlass() {
+        let doc = currentDocument
+        let viewing = doc.wiki?.viewer != nil
+        let scrolled: Bool
+        switch doc.kind {
+        case .markdown: scrolled = scrollView.contentView.bounds.origin.y > 4
+        case .wiki: scrolled = doc.wiki?.showsTitle == true && !viewing
+        default: scrolled = false
+        }
+        pageGlass.setShowing(scrolled)
+        // Folders keep the gallery's fast path: no glass, no bar.
+        pageActions.isHidden = !(doc.kind == .markdown || doc.kind == .image || doc.kind == .wiki) || viewing
+        backButton.isHidden = doc.wiki?.canGoBack != true || viewing
+        titlePill.isHidden = !(doc.wiki?.showsTitle == true && doc.wiki?.article != nil) || viewing
+    }
+
+    /// Contents and Share for the page on screen.
+    private func updatePageActions() {
+        let doc = currentDocument
+        switch doc.kind {
+        case .markdown:
+            let text = doc.storage.string
+            chrome.hasOutline = true
+            let outline = MarkdownHighlighter.outline(of: text as NSString).map {
+                OutlineEntry(id: String($0.location), title: $0.title, level: $0.level)
+            }
+            if chrome.outline != outline { chrome.outline = outline }
+            if let url = doc.url {
+                let images = MarkdownHighlighter.embeddedImages(in: text, from: url) { [weak self] target in
+                    self?.resolveWikiLink(target)
+                }
+                chrome.share = .note(url, images: images)
+            } else {
+                chrome.share = text.isEmpty ? .none : .text(text)
+            }
+        case .image:
+            chrome.hasOutline = false
+            chrome.outline = []
+            chrome.share = doc.url.map { .url($0) } ?? .none
+        case .wiki:
+            let article = doc.wiki?.article
+            let outline = article?.sections.map { OutlineEntry(id: $0.id, title: $0.title, level: $0.level) } ?? []
+            chrome.hasOutline = !outline.isEmpty
+            if chrome.outline != outline { chrome.outline = outline }
+            chrome.share = article.map { .url($0.url) } ?? .none
+        default:
+            break
+        }
+        chrome.jump = { [weak self] entry in
+            guard let self else { return }
+            if let page = self.currentDocument.wiki {
+                page.scrollTarget = entry?.id ?? "top"
+                return
+            }
+            guard let entry, let location = Int(entry.id) else { self.scrollToLocation(0); return }
+            self.scrollToLocation(location)
+        }
+        pageActions.invalidateIntrinsicContentSize()
+    }
+
+    /// Scrolls a note so `location`'s line sits just below the glass bar.
+    private func scrollToLocation(_ location: Int) {
+        guard currentDocument.kind == .markdown, let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+        let length = (textView.string as NSString).length
+        let location = min(location, length)
+        layoutManager.ensureLayout(for: textContainer)
+        let y: CGFloat
+        if location == 0 {
+            y = 0
+        } else {
+            let glyph = layoutManager.glyphIndexForCharacter(at: min(location, max(0, length - 1)))
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            y = line.minY + textView.textContainerOrigin.y - PageMetrics.contentTop
+        }
+        let clip = scrollView.contentView
+        var bounds = clip.bounds
+        bounds.origin.y = max(0, y)
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+        scrollView.reflectScrolledClipView(clip)
+        textView.setSelectedRange(NSRange(location: location, length: 0))
+        window?.makeFirstResponder(textView)
+    }
+
+    /// Scripting: scrolls the current note to a vertical offset (or a
+    /// Wikipedia page to that block).
+    func scrollPage(to offset: CGFloat) {
+        if let page = currentDocument.wiki { page.scrollTarget = "block-\(Int(offset))"; return }
+        guard currentDocument.kind == .markdown else { return }
+        let clip = scrollView.contentView
+        var bounds = clip.bounds
+        bounds.origin.y = offset
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// Opens a Wikipedia article: in the current Wikipedia tab, else a new one.
+    func openArticle(_ title: String) {
+        if let page = currentDocument.wiki {
+            page.open(title)
+        } else {
+            let page = WikiPage(style: .wikipedia)
+            page.open(title)
+            documents.append(Document(wiki: page))
+            switchTab(to: documents.count - 1)
+        }
+    }
+
+    @objc func wikiBack(_ sender: Any?) { currentDocument.wiki?.goBack() }
+
+    @objc func searchWikipedia(_ sender: Any?) {
+        if let page = currentDocument.wiki { page.goHome() } else { newWikiTab(sender) }
+    }
+
+    @objc func randomArticle(_ sender: Any?) {
+        if currentDocument.wiki == nil { newWikiTab(sender) }
+        currentDocument.wiki?.openRandom()
+    }
+
+    // MARK: - Assistant
+
+    private func configureAgent() {
+        chrome.toggleChat = { [weak self] in self?.toggleAgent(nil) }
+        agent.contextProvider = { [weak self] in
+            self?.agentContext(includingText: true)
+                ?? AgentContext(kind: .other, title: "", workingDirectory: AgentSession.defaultDirectory)
+        }
+        agent.openFile = { [weak self] url in
+            guard let self else { return }
+            if FileKind.classify(url) == .folder { self.openFolderTab(url) } else { self.open(url: url, forceNewTab: true) }
+        }
+        agent.openArticle = { [weak self] title in self?.openArticle(title) }
+        agent.prepareToSend = { [weak self] in self?.saveNotesForAgent() }
+    }
+
+    @objc func toggleAgent(_ sender: Any?) {
+        setAgentOpen(!agentOpen)
+    }
+
+    func setAgentOpen(_ open: Bool, width: CGFloat? = nil) {
+        if let width { agentWidth = max(280, min(width, 720)) }
+        agentOpen = open
+        chrome.chatOpen = open
+        updateAgentPanel()
+        if open {
+            AgentAccounts.shared.refresh()
+            SidebarTransition.fadeIn([agentHost])
+            window?.makeFirstResponder(agentHost)
+            agent.requestFocus()
+        } else {
+            focusCurrentPage()
+        }
+        app?.sessionChanged()
+    }
+
+    private func updateAgentPanel() {
+        let available = window?.contentView?.bounds.width ?? 900
+        agentWidthConstraint.constant = agentOpen ? min(agentWidth, max(260, available - sidebarWidthConstraint.constant - 320)) : 0
+        agentContainer.isHidden = !agentOpen
+        agentDivider.isHidden = !agentOpen
+    }
+
+    /// What the assistant sees: the open tab and the working directory —
+    /// the open folder, else ~/Documents.
+    private func agentContext(includingText: Bool) -> AgentContext {
+        let doc = currentDocument
+        let directory = workspace?.root ?? AgentSession.defaultDirectory
+        switch doc.kind {
+        case .wiki:
+            if let page = doc.wiki, let article = page.article {
+                return AgentContext(kind: .article, title: article.title, articleURL: article.url,
+                                    text: includingText ? article.plainText : nil, workingDirectory: directory)
+            }
+            return AgentContext(kind: .home, title: doc.name, workingDirectory: directory)
+        case .markdown:
+            return AgentContext(kind: .note, title: doc.displayTitle, fileURL: doc.url,
+                                text: includingText ? doc.storage.string : nil, workingDirectory: directory)
+        case .image:
+            return AgentContext(kind: .image, title: doc.name, fileURL: doc.url, workingDirectory: directory)
+        case .folder:
+            return AgentContext(kind: .folder, title: doc.name, fileURL: doc.url, workingDirectory: directory)
+        case .unsupported:
+            return AgentContext(kind: .other, title: doc.name, fileURL: doc.url, workingDirectory: directory)
+        }
+    }
+
+    private func updateAgentContext() {
+        let context = agentContext(includingText: false)
+        if agent.contextLabel != context.label { agent.contextLabel = context.label }
+        if agent.contextKind != context.kind { agent.contextKind = context.kind }
+        if agent.workingDirectory != context.workingDirectory { agent.workingDirectory = context.workingDirectory }
+    }
+
+    // MARK: - Live reload
+
+    private static func samePath(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath().path == b.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// The assistant is about to write a file: save unsaved edits to it
+    /// first, so its edit builds on what the user sees.
+    @objc private func agentWillModifyFile(_ notification: Notification) {
+        guard let url = notification.userInfo?["url"] as? URL else { return }
+        for doc in documents where doc.kind == .markdown && doc.edited {
+            guard let docURL = doc.url, Self.samePath(docURL, url) else { continue }
+            if doc === currentDocument {
+                flushAutosave()
+            } else if (try? doc.storage.string.write(to: docURL, atomically: true, encoding: .utf8)) != nil {
+                doc.edited = false
+                RecoveryStore.remove(doc)
+            }
+        }
+    }
+
+    /// Before a message goes out, unsaved edits to named notes reach disk,
+    /// so Claude Code or Codex reads exactly what the user sees.
+    private func saveNotesForAgent() {
+        commitTitleIfEditing()
+        flushAutosave()
+        for doc in documents where doc.kind == .markdown && doc.edited {
+            guard let url = doc.url, (try? doc.storage.string.write(to: url, atomically: true, encoding: .utf8)) != nil else { continue }
+            doc.edited = false
+            RecoveryStore.remove(doc)
+        }
+        window?.isDocumentEdited = currentDocument.edited
+    }
+
+    /// The assistant changed files: follow moves, reload open notes, and
+    /// refresh the sidebar, so changes appear without reopening anything.
+    @objc private func agentDidModifyFiles(_ notification: Notification) {
+        let urls = notification.userInfo?["urls"] as? [URL] ?? []
+        if let from = notification.userInfo?["from"] as? URL, let to = notification.userInfo?["to"] as? URL {
+            let fromPath = from.standardizedFileURL.path
+            for doc in documents {
+                guard let path = doc.url?.standardizedFileURL.path else { continue }
+                if path == fromPath {
+                    doc.url = to.standardizedFileURL
+                } else if path.hasPrefix(fromPath + "/") {
+                    doc.url = URL(fileURLWithPath: to.standardizedFileURL.path + path.dropFirst(fromPath.count))
+                }
+            }
+        }
+        var changedCurrent = false
+        // No URLs: a CLI changed files on its own, so recheck every open note.
+        let everything = urls.isEmpty
+        for doc in documents {
+            guard let docURL = doc.url, everything || urls.contains(where: { Self.samePath($0, docURL) }) else { continue }
+            if everything, doc.kind == .markdown,
+               (try? String(contentsOf: docURL, encoding: .utf8)) == doc.storage.string { continue }
+            if doc.kind == .markdown { reloadFromDisk(doc) }
+            if doc === currentDocument { changedCurrent = true }
+        }
+        if workspace != nil { sidebar.refresh() }
+        refreshChrome()
+        if changedCurrent { flashStatus("updated by assistant") }
+    }
+
+    /// Replaces a note's text with its file's, keeping it undoable when the
+    /// note is on screen. Notes with unsaved edits are left alone.
+    private func reloadFromDisk(_ doc: Document) {
+        guard doc.kind == .markdown, !doc.edited, let url = doc.url,
+              let text = try? String(contentsOf: url, encoding: .utf8), text != doc.storage.string else { return }
+        let full = NSRange(location: 0, length: doc.storage.length)
+        if doc === currentDocument {
+            let selection = textView.selectedRange()
+            reloadingFromDisk = true
+            if textView.shouldChangeText(in: full, replacementString: text) {
+                doc.storage.replaceCharacters(in: full, with: text)
+                textView.didChangeText()
+            }
+            reloadingFromDisk = false
+            textView.rehighlight()
+            let length = (text as NSString).length
+            textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
+            window?.isDocumentEdited = false
+        } else {
+            doc.storage.replaceCharacters(in: full, with: text)
+            let length = (text as NSString).length
+            doc.selection = NSRange(location: min(doc.selection.location, length), length: 0)
+        }
+        doc.edited = false
+        RecoveryStore.remove(doc)
+    }
+
+    private func flashStatus(_ message: String) {
+        guard currentDocument.kind == .markdown else { return }
+        statusLabel.stringValue = "\(currentDocument.name) · \(message)"
+        statusLabel.textColor = Theme.code.withAlphaComponent(0.9)
+        savedFlashTimer?.invalidate()
+        savedFlashTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            statusLabel.textColor = Theme.secondary
+            updateStatus()
+        }
+    }
+
     // MARK: - Debug
 
     func dumpLineFragments(to path: String) {
@@ -983,5 +1487,21 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             glyphIndex = NSMaxRange(effRange)
         }
         try? out.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+extension EditorWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(wikiBack(_:)):
+            return currentDocument.wiki?.canGoBack == true
+        case #selector(toggleAgent(_:)):
+            item.title = agentOpen ? "Hide Assistant" : "Show Assistant"
+            return true
+        case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
+            return currentDocument.kind == .markdown
+        default:
+            return true
+        }
     }
 }

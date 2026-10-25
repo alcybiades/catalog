@@ -677,13 +677,69 @@ let realRecents = UserDefaults.standard.stringArray(forKey: "recentFiles")
 let realSession = UserDefaults.standard.array(forKey: "sessionWindows") as NSArray?
 check("test profile starts without recents or session", AppState.defaults.object(forKey: "recentFiles") == nil
       && AppState.defaults.object(forKey: "sessionWindows") == nil)
-let testApp = AppDelegate()
-testApp.addRecentFile(source)
-testApp.sessionChanged()
+MainActor.assumeIsolated {
+    let testApp = AppDelegate()
+    testApp.addRecentFile(source)
+    testApp.sessionChanged()
+}
 check("test recents are recorded in test profile", AppState.defaults.stringArray(forKey: "recentFiles") == [source.path])
 check("test session is recorded in test profile", AppState.defaults.array(forKey: "sessionWindows") != nil)
 check("test recents leave user preferences intact", UserDefaults.standard.stringArray(forKey: "recentFiles") == realRecents)
 check("test session leaves user preferences intact", UserDefaults.standard.array(forKey: "sessionWindows") as NSArray? == realSession)
+// Pages: home placeholder, Wikipedia tabs, note outline, and the assistant's
+// file tools with live reload of open notes.
+func awaitTask<T>(_ work: @escaping () async -> T) -> T {
+    var result: T?
+    Task { @MainActor in result = await work() }
+    let deadline = Date().addingTimeInterval(5)
+    while result == nil, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    return result!
+}
+MainActor.assumeIsolated {
+    let agentRoot = fixture.appendingPathComponent("AgentRoot")
+    try? FileManager.default.createDirectory(at: agentRoot, withIntermediateDirectories: true)
+    let note = agentRoot.appendingPathComponent("Note.md")
+    try? "# Title\n\nalpha beta\n\n## Second\n".write(to: note, atomically: true, encoding: .utf8)
+
+    let pages = EditorWindowController(documents: [Document(wiki: WikiPage(style: .home))], app: nil)
+    check("home tab is a placeholder", pages.currentDocument.kind == .wiki && pages.currentDocument.isPlaceholder)
+    pages.open(url: note)
+    check("opening a file replaces the home tab", pages.documents.count == 1 && pages.currentDocument.url?.standardizedFileURL == note.standardizedFileURL)
+    pages.newWikiTab(nil)
+    check("new Wikipedia tab", pages.documents.count == 2 && pages.currentDocument.kind == .wiki && pages.currentDocument.name == "Wikipedia")
+    check("Wikipedia tab is not a placeholder", !pages.currentDocument.isPlaceholder)
+    pages.switchTab(to: 0)
+
+    let outline = MarkdownHighlighter.outline(of: "# One **bold**\n```\n# not\n```\n### [Three](x.md)\n" as NSString)
+    check("note outline lists headings outside code", outline.map(\.title) == ["One bold", "Three"] && outline.map(\.level) == [1, 3])
+
+    var opened: [URL] = []
+    let tools = AgentTools(root: agentRoot, openFile: nil) { opened.append($0) }
+    check("agent paths stay inside the working directory", (try? tools.resolve("../Studio/Guide.md")) == nil && (try? tools.resolve("/etc/hosts")) == nil)
+    check("agent paths resolve relative to the working directory", (try? tools.resolve("Sub/New.md"))?.path == agentRoot.appendingPathComponent("Sub/New.md").path)
+
+    let created = awaitTask { await tools.run("write_file", input: ["path": "Sub/New.md", "content": "hello"]) }
+    check("agent creates nested files", !created.isError && (try? String(contentsOf: agentRoot.appendingPathComponent("Sub/New.md"), encoding: .utf8)) == "hello")
+
+    pages.textView.setSelectedRange(NSRange(location: 0, length: 0))
+    pages.textView.insertText("Draft ", replacementRange: NSRange(location: 0, length: 0))
+    let edited = awaitTask { await tools.run("edit_file", input: ["path": "Note.md", "old_text": "alpha", "new_text": "gamma"]) }
+    check("agent edit succeeds", !edited.isError)
+    check("unsaved edits are saved before the agent edits", (try? String(contentsOf: note, encoding: .utf8))?.hasPrefix("Draft # Title") == true)
+    check("open note reloads with the agent's edit", pages.currentDocument.storage.string.contains("gamma beta") && !pages.currentDocument.edited)
+    pages.currentDocument.undoManager.undo()
+    check("agent edit is undoable in the editor", pages.currentDocument.storage.string.contains("alpha beta"))
+
+    let ambiguous = awaitTask { await tools.run("edit_file", input: ["path": "Note.md", "old_text": "#", "new_text": "*"]) }
+    check("ambiguous agent edit is refused", ambiguous.isError)
+    let missing = awaitTask { await tools.run("edit_file", input: ["path": "Note.md", "old_text": "zzz", "new_text": "y"]) }
+    check("agent edit of missing text is refused", missing.isError)
+    let moved = awaitTask { await tools.run("move_file", input: ["from": "Note.md", "to": "Renamed.md"]) }
+    check("open tab follows an agent move", !moved.isError && pages.documents[0].url?.lastPathComponent == "Renamed.md")
+    _ = awaitTask { await tools.run("open_file", input: ["path": "Sub/New.md"]) }
+    check("agent can open files in tabs", opened.last?.lastPathComponent == "New.md")
+    pages.window?.orderOut(nil)
+}
 controller.window?.orderOut(nil); restored.window?.orderOut(nil)
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

@@ -9,7 +9,8 @@ final class TabBarView: NSView {
 
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
-    var onNewTab: (() -> Void)?
+    /// The [+] was clicked; the view anchors the new-tab menu beneath it.
+    var onNewTab: ((NSView) -> Void)?
     /// Fired when a tab is dragged out of the bar; point is in screen coords.
     var onDetach: ((Int, NSPoint) -> Void)?
 
@@ -122,7 +123,10 @@ final class TabBarView: NSView {
         }
         let plus = NewTabButton()
         plus.onHoverChange = { [weak self] in self?.refreshHover() }
-        plus.onClick = { [weak self] in self?.onNewTab?() }
+        plus.onClick = { [weak self, weak plus] in
+            guard let plus else { return }
+            self?.onNewTab?(plus)
+        }
         stack.addArrangedSubview(plus)
         stack.setFrameSize(NSSize(width: stack.fittingSize.width, height: 31))
         layoutSubtreeIfNeeded()

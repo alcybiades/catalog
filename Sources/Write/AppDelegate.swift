@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var openRecentMenu: NSMenu!
@@ -20,6 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Capture before any window exists: refreshChrome() overwrites the
         // stored session as windows come up.
         let savedWindows = AppState.defaults.array(forKey: "sessionWindows") as? [[String: Any]] ?? []
+        // Scripting: `--assistant-model codex:<model>` (or claude-code:opus, claude-api, apple).
+        if let index = CommandLine.arguments.firstIndex(of: "--assistant-model"), CommandLine.arguments.indices.contains(index + 1),
+           let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
+            AgentBackend.preferred = backend
+        }
         buildMainMenu()
 
         let args = Array(CommandLine.arguments.dropFirst())
@@ -27,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var skipNext = false
         for arg in args {
             if skipNext { skipNext = false; continue }
-            if arg == "--snapshot" { skipNext = true; continue }
+            if Self.valueFlags.contains(arg) { skipNext = true; continue }
             if arg.hasPrefix("-") { continue }
             cliFiles.append(arg)
         }
@@ -56,23 +62,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if args.contains("--settings") { openSettings(nil) }
-        if let flagIndex = args.firstIndex(of: "--snapshot"), args.indices.contains(flagIndex + 1) {
-            let outPath = args[flagIndex + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+        // Scripting: `--wiki "Title"` opens an article, `--assistant` shows
+        // the assistant, and `--ask "Question"` sends it a question.
+        func value(after flag: String) -> String? {
+            guard let index = args.firstIndex(of: flag), args.indices.contains(index + 1) else { return nil }
+            return args[index + 1]
+        }
+        if let title = value(after: "--wiki") { keyController?.openArticle(title) }
+        if args.contains("--assistant") || value(after: "--ask") != nil { keyController?.setAgentOpen(true) }
+        if let offset = value(after: "--scroll").flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.scrollPage(to: CGFloat(offset)) }
+        }
+        if let question = value(after: "--ask") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.agent.send(question) }
+        }
+        if let outPath = value(after: "--snapshot") {
+            let delay = Double(value(after: "--snapshot-delay") ?? "") ?? 0.8
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
                 let targetWindow = args.contains("--settings") ? settings?.window : keyController?.window
-                guard let view = targetWindow?.contentView,
-                      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-                view.cacheDisplay(in: view.bounds, to: rep)
-                try? rep.representation(using: .png, properties: [:])?
-                    .write(to: URL(fileURLWithPath: outPath))
+                guard let window = targetWindow else { return }
+                // The window server's composite, so Liquid Glass and the
+                // background blur appear as on screen (an app may always
+                // capture its own windows).
+                if let image = Self.windowImage(window) {
+                    try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: outPath))
+                } else if let view = window.contentView,
+                          let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: outPath))
+                }
                 keyController?.dumpLineFragments(to: outPath + ".layout.txt")
             }
         }
     }
 
+    private typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+
+    private static func windowImage(_ window: NSWindow) -> CGImage? {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
+        let create = unsafeBitCast(symbol, to: CreateWindowImage.self)
+        // kCGWindowListOptionIncludingWindow = 1 << 3; kCGWindowImageBoundsIgnoreFraming = 1 << 0
+        return create(.null, 1 << 3, UInt32(window.windowNumber), 1)?.takeRetainedValue()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Flags whose next argument is a value, not a file to open.
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model"]
+
+    /// AppKit also delivers path-like launch arguments here, including flag
+    /// values such as the --snapshot output path (which doesn't exist yet).
+    private static let flagValues: Set<String> = {
+        let args = CommandLine.arguments
+        return Set(args.indices.dropLast().filter { valueFlags.contains(args[$0]) }.map { args[$0 + 1] })
+    }()
+
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        if Self.flagValues.contains(filename) { return true }
         let controller = keyController ?? makeWindow()
         return controller.open(url: URL(fileURLWithPath: filename))
     }
@@ -94,6 +142,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @discardableResult
     func makeWindow(documents: [Document] = [], frame frameString: String? = nil) -> EditorWindowController {
+        // A new window opens on the home page: Wikipedia, a folder, a file,
+        // or a blank note. Opening anything replaces it.
+        let documents = documents.isEmpty ? [Document(wiki: WikiPage(style: .home))] : documents
         let controller = EditorWindowController(documents: documents, app: self)
         if let frameString, let window = controller.window {
             var frame = NSRectFromString(frameString)
@@ -153,6 +204,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let keyController { keyController.newTab(sender) } else { makeWindow() }
     }
 
+    @objc func newWikiTab(_ sender: Any?) {
+        if let keyController { keyController.newWikiTab(sender) } else { makeWindow().newWikiTab(sender) }
+    }
+
+    @objc func toggleAgent(_ sender: Any?) {
+        (keyController ?? makeWindow()).toggleAgent(sender)
+    }
+
     @objc func closeTab(_ sender: Any?) {
         if let settingsWindow = settings?.window, NSApp.keyWindow === settingsWindow {
             settingsWindow.close()
@@ -174,6 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recentFiles: [String] {
         get { AppState.defaults.stringArray(forKey: "recentFiles") ?? [] }
         set { AppState.defaults.set(Array(newValue.prefix(12)), forKey: "recentFiles") }
+    }
+
+    var recentFileURLs: [URL] {
+        recentFiles.filter { FileManager.default.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
     }
 
     func addRecentFile(_ url: URL) {
@@ -220,9 +283,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func sessionChanged() {
         let entries: [[String: Any]] = controllers.compactMap { controller in
             let files = controller.documents.compactMap { $0.url?.path }
-            guard !files.isEmpty || controller.workspace != nil, let window = controller.window else { return nil }
+            // Every tab in order: files by path, Wikipedia pages by article.
+            let tabs: [[String: String]] = controller.documents.compactMap { doc in
+                if let path = doc.url?.path { return ["file": path] }
+                if let page = doc.wiki, !doc.isPlaceholder {
+                    return ["wiki": page.article?.title ?? page.route.map { $0.isRandom ? "" : $0.query } ?? ""]
+                }
+                return nil
+            }
+            guard !tabs.isEmpty || controller.workspace != nil, let window = controller.window else { return nil }
+            let currentTab: [String: String] = {
+                let doc = controller.currentDocument
+                if let path = doc.url?.path { return ["file": path] }
+                if let page = doc.wiki { return ["wiki": page.article?.title ?? page.route?.query ?? ""] }
+                return [:]
+            }()
             return [
                 "files": files,
+                "tabs": tabs,
+                "currentTab": currentTab,
+                "agentOpen": controller.agentOpen,
+                "agentWidth": Double(controller.agentWidth),
                 "current": controller.currentDocument.url?.path ?? "",
                 "frame": NSStringFromRect(window.frame),
                 "workspace": controller.workspace?.root.path ?? "",
@@ -238,17 +319,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for entry in savedWindows {
             let files = (entry["files"] as? [String] ?? [])
                 .filter { FileManager.default.fileExists(atPath: $0) }
-            guard !files.isEmpty || !(entry["workspace"] as? String ?? "").isEmpty else { continue }
+            // Older sessions list only files.
+            let tabs = (entry["tabs"] as? [[String: String]] ?? files.map { ["file": $0] }).filter { tab in
+                if let path = tab["file"] { return FileManager.default.fileExists(atPath: path) }
+                return tab["wiki"] != nil
+            }
+            guard !tabs.isEmpty || !(entry["workspace"] as? String ?? "").isEmpty else { continue }
             let controller = makeWindow(frame: entry["frame"] as? String)
-            for path in files { controller.restoreTab(url: URL(fileURLWithPath: path)) }
+            for tab in tabs {
+                if let path = tab["file"] { controller.restoreTab(url: URL(fileURLWithPath: path)) }
+                else if let title = tab["wiki"] { controller.restoreWikiTab(title: title) }
+            }
             if let root = entry["workspace"] as? String, !root.isEmpty,
                FileManager.default.fileExists(atPath: root) {
                 controller.restoreWorkspace(root: URL(fileURLWithPath: root), collapsed: entry["sidebarCollapsed"] as? Bool ?? false,
                                             width: CGFloat(entry["sidebarWidth"] as? Double ?? 220), media: entry["mediaMode"] as? Bool ?? false)
             }
-            if let currentPath = entry["current"] as? String,
+            if let currentTab = entry["currentTab"] as? [String: String], let title = currentTab["wiki"],
+               let index = controller.documents.firstIndex(where: { doc in
+                   guard let page = doc.wiki else { return false }
+                   return page.article?.title == title || page.route?.query == title
+               }) {
+                controller.switchTab(to: index)
+            } else if let currentPath = entry["current"] as? String,
                let index = controller.documents.firstIndex(where: { $0.url?.path == currentPath }) {
                 controller.switchTab(to: index)
+            }
+            if entry["agentOpen"] as? Bool == true {
+                controller.setAgentOpen(true, width: CGFloat(entry["agentWidth"] as? Double ?? 380))
             }
         }
         // Legacy single-window session from earlier builds.
@@ -306,6 +404,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func decreaseFontSize(_ sender: Any?) { adjustFontSize(by: -2) }
 
     private func adjustFontSize(by delta: CGFloat) {
+        // On a Wikipedia page, ⌘= / ⌘− size the article text instead.
+        if keyController?.currentDocument.kind == .wiki {
+            WikiTheme.adjustFontSize(by: delta / 2)
+            return
+        }
         Theme.fontSize = min(max(Theme.fontSize + delta, 10), 64)
         applyFontChangeEverywhere()
     }
