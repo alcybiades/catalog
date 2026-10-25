@@ -15,7 +15,9 @@ make test      # editing, workspace, and image regressions
 Builds with Xcode Command Line Tools (`swift` + `make`). Xcode 26 or newer is
 needed for Tahoe's native window styling; the Makefile prefers the full Xcode
 installation when available. Set `DEVELOPER_DIR` to select a different Xcode.
-The bundle includes `Support/AppIcon.icns` automatically.
+The app icon is an Icon Composer document (`Support/AppIcon.icon`, shared
+with Encyclopedia: a glass codex with a laurel wreath on graphite), compiled
+into the bundle by `actool` with the build.
 
 Tests and the gallery benchmark use isolated preferences and recovery storage.
 For automated UI testing, launch a separate instance with

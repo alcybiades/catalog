@@ -41,7 +41,9 @@ app: build
 	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(BIN) $(BUNDLE)/Contents/MacOS/$(APP)
 	cp Support/Info.plist $(BUNDLE)/Contents/Info.plist
-	cp Support/AppIcon.icns $(BUNDLE)/Contents/Resources/AppIcon.icns
+	xcrun actool Support/AppIcon.icon --compile $(BUNDLE)/Contents/Resources \
+		--platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon \
+		--output-partial-info-plist .build/AppIcon-partial.plist > /dev/null
 	codesign --force --sign - $(BUNDLE)
 
 run: app
