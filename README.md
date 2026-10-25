@@ -26,13 +26,68 @@ if the test crashes. Use temporary copies of files for testing edits; explicitly
 opened files still save to their supplied paths. Normal launches retain your
 usual session and settings.
 
+Requires macOS 26 (Tahoe): the Wikipedia reader and the page chrome use
+Liquid Glass.
+
+## Home, tabs, and Wikipedia
+
+- A new window opens on the **home page**: search Wikipedia, open a folder or
+  file, or start a blank note. Opening anything replaces the home tab.
+- The tab strip's **+** offers **New Note** (⌘T) or **New Wikipedia Page**
+  (⇧⌘T). Wikipedia pages are ordinary tabs: several can be open, they detach
+  into their own windows, and they restore with the session.
+- Wikipedia articles render natively (from Encyclopedia): infobox card,
+  figures, tables, diagrams, math. In-article links open in the same tab;
+  **Go** has Back (⌘[), Search Wikipedia (⌘L), and Random Article (⌥⌘R).
+  On a Wikipedia page, ⌘= / ⌘− size the article text.
+- Every note, image, and Wikipedia page has the same bar under the tabs: Back
+  (Wikipedia), the title once it scrolls away, and a glass cluster at right —
+  **Contents** (the article's sections, or a note's headings), **Share** (the
+  article link, the image, or the note with or without its embedded images),
+  and **Assistant**. Pages scroll up under the tabs and bar, behind a Liquid
+  Glass fade that appears only while content is beneath them.
+
+## Assistant
+
+The chat bubble (or ⌘J) opens the assistant in a right sidebar, beside
+whatever tab is open. It sees the open article, note, or image, and works in
+a **working directory**: the open folder, or `~/Documents` without one.
+
+The model menu at the bottom of the sidebar picks who answers:
+
+- **Claude** (Opus or Sonnet) through your Claude subscription, by running
+  [Claude Code](https://claude.com/product/claude-code) headless
+  (`claude -p --output-format stream-json`, edits auto-accepted in the working
+  directory).
+- **Codex** (any model your account lists) through your ChatGPT subscription,
+  by running `codex exec --json` sandboxed to the working directory.
+- **Claude API** with an Anthropic API key from Settings (⌘,).
+- **Apple Intelligence**, on device; answers questions but can't edit files.
+
+Claude Code and Codex must be installed; Write finds them on your login
+shell's PATH (npm, Homebrew, and nvm installs all work). If one isn't signed
+in, the menu offers **Sign In**, which runs `claude auth login` or
+`codex login` in Terminal. Write never handles those credentials. Each
+conversation keeps its CLI session and resumes it on every turn; the title
+menu at the top of the sidebar lists the window's conversations, and
+**New Conversation** starts another. Picking a different model starts a new
+conversation once the current one has messages.
+
+Changes appear live: unsaved notes are saved before each message, so the
+assistant reads what you see; after each file step, open notes reload in
+place (⌘Z undoes an edit) and the sidebar refreshes. Notes without unsaved
+edits also reload when the window becomes key.
+
+The first time the assistant works in `~/Documents`, macOS asks whether
+Write may access that folder.
+
 ## Editing
 
 - Click anywhere to place the cursor, like Word or Pages.
 - Obsidian-style live preview: markdown renders in place and syntax markers
   (`#`, `**`, backticks, link URLs) are hidden except on the paragraph the
   cursor is on, where they reappear dimmed for editing.
-- Windows and tabs: ⌘N opens a window, ⌘T a tab; ⌘W or the hover × closes a
+- Windows and tabs: ⌘N opens a window, ⌘T a note tab; ⌘W or the hover × closes a
   tab, ⇧⌘W the window; ⌘⇧] / ⌘⇧[ or ⌃⇥ cycle tabs. Drag a tab out of the bar
   to detach it into its own window. Each tab keeps its own undo history and
   autosave; the session (windows, tabs, frames) restores on relaunch.
@@ -156,7 +211,10 @@ the workspace.
 | @ / `[[` | reference another file (Markdown link / wiki link) |
 | ⌘1–⌘6, ⌘0 | set / clear heading level |
 | ⌘= / ⌘− | bigger / smaller text |
-| ⌘N ⌘T ⌘O ⌘S ⇧⌘S | new window / new tab / open / save / save as |
+| ⌘N ⌘T ⇧⌘T | new window / new note / new Wikipedia page |
+| ⌘O ⌘S ⇧⌘S | open / save / save as |
+| ⌘J | show or hide the assistant |
+| ⌘[ ⌘L ⌥⌘R | Wikipedia back / search / random article |
 | ⌘W / ⇧⌘W | close tab / close window |
 | ⌘F | find |
 

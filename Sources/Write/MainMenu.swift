@@ -24,7 +24,9 @@ extension AppDelegate {
         let fileMenu = NSMenu(title: "File")
         fileItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
-        fileMenu.addItem(withTitle: "New Tab", action: #selector(newTab(_:)), keyEquivalent: "t")
+        fileMenu.addItem(withTitle: "New Note", action: #selector(newTab(_:)), keyEquivalent: "t")
+        let wikiTab = fileMenu.addItem(withTitle: "New Wikipedia Page", action: #selector(newWikiTab(_:)), keyEquivalent: "T")
+        wikiTab.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Open…", action: #selector(openDocument(_:)), keyEquivalent: "o")
         let folder = fileMenu.addItem(withTitle: "Open Folder…", action: #selector(openFolder(_:)), keyEquivalent: "o")
         folder.keyEquivalentModifierMask = [.command, .option]
@@ -78,6 +80,18 @@ extension AppDelegate {
         formatMenu.addItem(.separator())
         formatMenu.addItem(withTitle: "Bigger Text", action: #selector(increaseFontSize(_:)), keyEquivalent: "=")
         formatMenu.addItem(withTitle: "Smaller Text", action: #selector(decreaseFontSize(_:)), keyEquivalent: "-")
+
+        // Go: Wikipedia navigation
+        let goItem = NSMenuItem()
+        mainMenu.addItem(goItem)
+        let goMenu = NSMenu(title: "Go")
+        goItem.submenu = goMenu
+        goMenu.addItem(withTitle: "Back", action: #selector(EditorWindowController.wikiBack(_:)), keyEquivalent: "[")
+        goMenu.addItem(withTitle: "Search Wikipedia", action: #selector(EditorWindowController.searchWikipedia(_:)), keyEquivalent: "l")
+        let random = goMenu.addItem(withTitle: "Random Article", action: #selector(EditorWindowController.randomArticle(_:)), keyEquivalent: "r")
+        random.keyEquivalentModifierMask = [.command, .option]
+        goMenu.addItem(.separator())
+        goMenu.addItem(withTitle: "Show Assistant", action: #selector(toggleAgent(_:)), keyEquivalent: "j")
 
         // Window
         let windowItem = NSMenuItem()

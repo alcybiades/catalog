@@ -1,10 +1,15 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.2
 import PackageDescription
 
 let package = Package(
     name: "Write",
-    platforms: [.macOS(.v13)],
+    // Liquid Glass and the Wikipedia reader's SwiftUI need macOS 26.
+    platforms: [.macOS(.v26)],
     targets: [
-        .executableTarget(name: "Write", path: "Sources/Write")
+        .executableTarget(
+            name: "Write",
+            path: "Sources/Write",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        )
     ]
 )

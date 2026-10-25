@@ -10,3 +10,9 @@
   explicitly opened files still save to their supplied paths.
 - A preview intended for the user to use with their own documents may launch
   normally; do not use that session for automated edits.
+- Scripting flags for checking UI in a test-mode launch: `--wiki "Title"`
+  opens an article, `--assistant` shows the assistant, `--ask "Question"`
+  sends it one, `--assistant-model codex:<model>` (or `claude-code:opus`,
+  `claude-api`, `apple`) picks its model, `--scroll N` scrolls the note (or to Wikipedia block N), and
+  `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
+  composite, glass included.

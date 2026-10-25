@@ -156,6 +156,57 @@ final class MarkdownHighlighter {
     /// Headings, for resolving `#anchor` link fragments.
     static let anchorHeading = MarkdownHighlighter.regex(#"^(#{1,6})[ \t]+(.*)$"#)
 
+    /// The document's headings in order, for the Contents menu: the visible
+    /// title (inline markers stripped), level, and the line's location.
+    static func outline(of text: NSString) -> [(title: String, level: Int, location: Int)] {
+        var result: [(String, Int, Int)] = []
+        var lineStart = 0
+        var inCodeBlock = false
+        while lineStart < text.length {
+            let lineRange = text.lineRange(for: NSRange(location: lineStart, length: 0))
+            let line = text.substring(with: lineRange)
+            let local = NSRange(location: 0, length: (line as NSString).length)
+            if fence.firstMatch(in: line, range: local) != nil {
+                inCodeBlock.toggle()
+            } else if !inCodeBlock, let m = anchorHeading.firstMatch(in: line, range: local) {
+                let raw = (line as NSString).substring(with: m.range(at: 2))
+                let title = raw
+                    .replacingOccurrences(of: #"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]"#, with: "$1", options: .regularExpression)
+                    .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+                    .replacingOccurrences(of: #"<[^>]+>|[*_`~]+|\s#+\s*$"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty { result.append((title, m.range(at: 1).length, lineRange.location)) }
+            }
+            lineStart = NSMaxRange(lineRange)
+        }
+        return result
+    }
+
+    /// The local images a note embeds (`![alt](path)` and `![[name]]`),
+    /// resolved with `resolveWiki` for wiki embeds; existing files only.
+    static func embeddedImages(in text: String, from source: URL, resolveWiki: (String) -> URL?) -> [URL] {
+        var urls: [URL] = []
+        for line in text.components(separatedBy: .newlines) {
+            let local = NSRange(location: 0, length: (line as NSString).length)
+            if let m = imageEmbed.firstMatch(in: line, range: local) {
+                let destination = (line as NSString).substring(with: m.range(at: 2))
+                    .trimmingCharacters(in: .whitespaces)
+                    .split(separator: " ").first.map(String.init) ?? ""
+                if let url = FileReference.resolve(destination.trimmingCharacters(in: CharacterSet(charactersIn: "<>")), from: source) {
+                    urls.append(url)
+                }
+            } else if let m = wikiImageEmbed.firstMatch(in: line, range: local),
+                      let url = resolveWiki((line as NSString).substring(with: m.range(at: 1))) {
+                urls.append(url)
+            }
+        }
+        var seen = Set<String>()
+        return urls.filter { url in
+            FileManager.default.fileExists(atPath: url.path) && FileKind.classify(url) == .image
+                && seen.insert(url.standardizedFileURL.path).inserted
+        }
+    }
+
     /// The line range of the heading an `#anchor` names. Both sides are
     /// slugged, so a GitHub fragment (`#my-heading`) and an Obsidian one
     /// (`#My Heading`) find the same line.

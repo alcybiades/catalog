@@ -10,6 +10,9 @@ final class SettingsWindowController: NSObject {
     private var popups: [NSPopUpButton] = []
     private var colorWells: [Int: NSColorWell] = [:]
     private var noColorButtons: [Int: NSButton] = [:]
+    private var keyField: NSSecureTextField?
+    private var keyButton: NSButton?
+    private var keyStatus: NSTextField?
 
     private enum ColorRole: Int, CaseIterable {
         case bold, heading, italic, listMarker, quote, inlineCode, link
@@ -63,7 +66,7 @@ final class SettingsWindowController: NSObject {
 
     private func build() {
         let panel = WriteWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 455, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 455, height: 530),
             styleMask: [.titled, .fullSizeContentView, .closable],
             backing: .buffered,
             defer: false
@@ -106,7 +109,13 @@ final class SettingsWindowController: NSObject {
         colors.alignment = .leading
         colors.spacing = 7
 
-        let column = NSStackView(views: [heading, bodyRow, interfaceRow, colorsHeading, colors])
+        let assistantHeading = NSTextField(labelWithString: "assistant")
+        assistantHeading.font = Theme.interfaceFont(size: 12)
+        assistantHeading.textColor = Theme.secondary
+        interfaceLabels.append((assistantHeading, 12))
+        let assistant = assistantRows()
+
+        let column = NSStackView(views: [heading, bodyRow, interfaceRow, colorsHeading, colors, assistantHeading, assistant])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 13
@@ -217,6 +226,79 @@ final class SettingsWindowController: NSObject {
         row.translatesAutoresizingMaskIntoConstraints = false
         row.widthAnchor.constraint(equalToConstant: 405).isActive = true
         return row
+    }
+
+    /// The Anthropic API key for the assistant, kept in the Keychain (shared
+    /// with Encyclopedia). ANTHROPIC_API_KEY in the environment also works.
+    private func assistantRows() -> NSView {
+        let label = NSTextField(labelWithString: "anthropic key")
+        label.font = Theme.interfaceFont(size: 13)
+        label.textColor = Theme.foreground
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: 105).isActive = true
+        interfaceLabels.append((label, 13))
+
+        let field = NSSecureTextField()
+        field.placeholderString = "sk-ant-…"
+        field.font = Theme.interfaceFont(size: 12)
+        field.isBordered = false
+        field.drawsBackground = true
+        field.backgroundColor = NSColor.white.withAlphaComponent(0.08)
+        field.focusRingType = .none
+        field.target = self
+        field.action = #selector(keyAction(_:))
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        keyField = field
+
+        let button = NSButton(title: "Save", target: self, action: #selector(keyAction(_:)))
+        button.font = Theme.interfaceFont(size: 12)
+        button.bezelStyle = .push
+        keyButton = button
+
+        let row = NSStackView(views: [label, field, button])
+        row.orientation = .horizontal
+        row.spacing = 12
+
+        let status = NSTextField(wrappingLabelWithString: "")
+        status.font = Theme.interfaceFont(size: 11)
+        status.textColor = Theme.secondary
+        status.translatesAutoresizingMaskIntoConstraints = false
+        status.widthAnchor.constraint(equalToConstant: 405).isActive = true
+        keyStatus = status
+        interfaceLabels.append((status, 11))
+
+        let stack = NSStackView(views: [row, status])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        refreshKeyRow()
+        return stack
+    }
+
+    private func refreshKeyRow() {
+        let saved = APIKeyStore.read()
+        let hasSaved = !(saved ?? "").isEmpty
+        keyField?.isHidden = hasSaved
+        keyButton?.title = hasSaved ? "Remove saved key" : "Save"
+        if hasSaved, let saved {
+            keyStatus?.stringValue = "Saved in your Keychain (\(saved.prefix(7))…\(saved.suffix(4))). Used by “Claude API” in the assistant’s model menu; Claude and Codex subscriptions sign in from that menu."
+        } else if APIKeyStore.key != nil {
+            keyStatus?.stringValue = "Using ANTHROPIC_API_KEY from the environment."
+        } else {
+            keyStatus?.stringValue = "Optional. The assistant can also use your Claude or ChatGPT subscription through Claude Code or Codex — choose them in its model menu."
+        }
+    }
+
+    @objc private func keyAction(_ sender: Any?) {
+        if !(APIKeyStore.read() ?? "").isEmpty {
+            APIKeyStore.save(nil)
+        } else {
+            guard let value = keyField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return }
+            APIKeyStore.save(value)
+            keyField?.stringValue = ""
+        }
+        refreshKeyRow()
     }
 
     @objc private func fontSelected(_ sender: NSPopUpButton) {
