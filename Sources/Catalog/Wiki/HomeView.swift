@@ -31,17 +31,13 @@ struct HomeView: View {
                         }
                         // Spans the action pills exactly, or a fixed column
                         // on a Wikipedia tab.
-                        searchField
+                        // Lays out at field height; the open suggestion list
+                        // draws over the content below rather than pushing it.
+                        Color.clear
+                            .frame(height: Self.fieldHeight)
+                            .overlay(alignment: .top) { searchField.fixedSize(horizontal: false, vertical: true) }
                             .frame(width: isLauncher && actionsWidth > 0 ? actionsWidth : nil)
                             .frame(maxWidth: isLauncher ? nil : 460)
-                            .overlay(alignment: .topLeading) {
-                                if !suggestions.isEmpty {
-                                    suggestionList
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .offset(y: Self.fieldHeight + 8)
-                                        .transition(.opacity)
-                                }
-                            }
                     }
                     .zIndex(1)
                     shortcuts
@@ -72,12 +68,12 @@ struct HomeView: View {
     // MARK: Pieces
 
     private var masthead: some View {
-        VStack(spacing: 14) {
+        // Logo and wordmark on one line.
+        HStack(spacing: 14) {
             Image(systemName: isLauncher ? "text.book.closed.fill" : "book.closed.fill")
-                .font(.system(size: 38, weight: .regular))
+                .font(.system(size: 36, weight: .regular))
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
-                .padding(.bottom, 2)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
                 .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
@@ -90,8 +86,13 @@ struct HomeView: View {
 
     private var searchField: some View {
         let hasQuery = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        let expanded = !suggestions.isEmpty
+        // Rounded like a capsule at field height; suggestions extend the
+        // same shape downward instead of floating as a separate card.
+        let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2, style: .continuous)
         return GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(spacing: 0) {
                 HStack(spacing: 9) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 13, weight: .medium))
@@ -125,10 +126,21 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, 16)
                 .frame(height: Self.fieldHeight)
-                .glassEffect(.regular.interactive(), in: Capsule())
-                .glassEffectID("field", in: glass)
-                .contentShape(Capsule())
+                .contentShape(Rectangle())
                 .onTapGesture { searchFocused = true }
+
+                if expanded {
+                    Rectangle()
+                        .fill(WikiTheme.hairline)
+                        .frame(height: 1)
+                        .padding(.horizontal, 16)
+                    suggestionRows
+                }
+                }
+                .background(WikiTheme.background.opacity(expanded ? 0.85 : 0), in: shape)
+                .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(expanded ? 1 : 0))
+                .glassEffect(.regular.interactive(), in: shape)
+                .glassEffectID("field", in: glass)
 
                 if hasQuery {
                     Button(action: go) {
@@ -143,6 +155,7 @@ struct HomeView: View {
                     .help("I’m Feeling Lucky")
                     .accessibilityLabel("Go")
                     .transition(.scale(0.5).combined(with: .opacity))
+                    .frame(height: Self.fieldHeight)
                 }
             }
         }
@@ -155,28 +168,31 @@ struct HomeView: View {
     private static let fieldHeight: CGFloat = 42
 
     /// Article titles starting with the query; ↑/↓ pick one, Return opens it.
-    private var suggestionList: some View {
-        let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2)
-        return VStack(alignment: .leading, spacing: 0) {
+    private var suggestionRows: some View {
+        VStack(spacing: 0) {
             ForEach(Array(suggestions.enumerated()), id: \.element) { index, title in
                 Button { pick(title) } label: {
-                    Text(title)
-                        .font(WikiTheme.body(bodyFamily, size: 15))
-                        .foregroundStyle(WikiTheme.foreground)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(index == highlighted ? WikiTheme.wash.opacity(0.08) : .clear, in: Capsule())
-                        .contentShape(Capsule())
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(WikiTheme.secondary)
+                        Text(title)
+                            .font(WikiTheme.body(bodyFamily, size: 16))
+                            .foregroundStyle(WikiTheme.foreground)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .frame(height: 36)
+                    .background(index == highlighted ? WikiTheme.wash.opacity(0.08) : .clear)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onHover { if $0 { highlighted = index } }
             }
         }
-        .padding(6)
-        .background(WikiTheme.background.opacity(0.85), in: shape)
-        .glassEffect(.regular, in: shape)
+        .padding(.vertical, 6)
+        .padding(.bottom, 4)
     }
 
     private func loadSuggestions() async {
