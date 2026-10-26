@@ -326,8 +326,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             pageGlass.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             pageGlass.topAnchor.constraint(equalTo: container.topAnchor),
             pageGlass.heightAnchor.constraint(equalToConstant: PageMetrics.glassHeight),
-            pageActions.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -PageMetrics.inset),
-            pageActions.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            // Contents and Share sit in the lower-left corner, level with
+            // the assistant button in the lower right.
+            pageActions.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: ChatDock.margin),
+            pageActions.bottomAnchor.constraint(equalTo: container.bottomAnchor,
+                                                constant: chatRest.bottom - (ChatDock.size - PageMetrics.control) / 2),
             backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
             titlePill.centerXAnchor.constraint(equalTo: contentGuide.centerXAnchor),

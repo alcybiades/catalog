@@ -64,7 +64,7 @@ final class WindowChrome {
 
 // MARK: - Action cluster
 
-/// The upper-right glass capsule: Contents and Share.
+/// The lower-left glass capsule: Contents and Share.
 struct PageActions: View {
     let outline: [OutlineEntry]
     let contentsEnabled: Bool
