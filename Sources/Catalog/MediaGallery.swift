@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-struct MediaSection {
+struct MediaSection: Equatable {
     let directory: URL
     let images: [URL]
 }

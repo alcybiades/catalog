@@ -753,5 +753,31 @@ check("recovery index follows a renamed buffer",
       && RecoveryStore.draft(forPath: draftDoc.url!.path)?.id == draftDoc.recoveryID)
 RecoveryStore.remove(draftDoc)
 check("removed recovery draft is not found", RecoveryStore.draft(forPath: draftDoc.url!.path) == nil)
+
+// The watcher reports new entries, ignores atomic saves, and stops with its workspace.
+let watched = fixture.appendingPathComponent("Watched")
+try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
+try "a".write(to: watched.appendingPathComponent("Saved.md"), atomically: true, encoding: .utf8)
+var watchedWorkspace: Workspace? = Workspace(root: watched)
+var reported: [Workspace.Change] = []
+let watchObserver = NotificationCenter.default.addObserver(forName: Workspace.didChangeNotification, object: nil, queue: nil) { note in
+    if let change = note.userInfo?["change"] as? Workspace.Change, change.root == Workspace.canonicalPath(watched) { reported.append(change) }
+}
+func settleWatcher(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+settleWatcher(0.6)
+try "b".write(to: watched.appendingPathComponent("Saved.md"), atomically: true, encoding: .utf8)
+settleWatcher(1)
+let quietSave = reported.isEmpty
+try "c".write(to: watched.appendingPathComponent("New.md"), atomically: true, encoding: .utf8)
+let watchDeadline = Date().addingTimeInterval(5)
+while reported.isEmpty, Date() < watchDeadline { settleWatcher(0.05) }
+let seen = reported.first?.affects(path: Workspace.canonicalPath(watched)) == true
+watchedWorkspace = nil
+reported = []
+settleWatcher(0.2)
+try "d".write(to: watched.appendingPathComponent("After.md"), atomically: true, encoding: .utf8)
+settleWatcher(1)
+check("watcher reports new files, not saves, and stops with its workspace", quietSave && seen && reported.isEmpty && watchedWorkspace == nil)
+NotificationCenter.default.removeObserver(watchObserver)
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
