@@ -53,7 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if controllers.isEmpty { makeWindow() }
         }
 
-        NSApp.activate(ignoringOtherApps: true)
+        // Test runs open behind whatever the user is working in, never taking focus.
+        if !AppState.isTesting { NSApp.activate(ignoringOtherApps: true) }
 
         // Debug: select line N fully and bold it, to reproduce artifacts.
         if let flagIndex = args.firstIndex(of: "--boldline"), args.indices.contains(flagIndex + 1),
