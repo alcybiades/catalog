@@ -156,22 +156,22 @@ struct Palette {
         inlineCode: NSColor(hex: 0xB0412E), listMarker: NSColor(hex: 0x8F8F8F),
         quote: NSColor(hex: 0x5D5D5D), link: NSColor(hex: 0x1F62D0))
 
-    /// Cream paper, warm brown-gray ink, and muted earthy accents.
+    /// Cream paper, near-black ink, and muted earthy accents.
     static let paper = Palette(
         isDark: false,
         background: NSColor(hex: 0xF6EFDF), backgroundOpacity: 1, blurRadius: 0,
-        foreground: NSColor(hex: 0x4D4237), dim: NSColor(hex: 0xB3A48C),
-        secondary: NSColor(hex: 0x5C4B3B, alpha: 0.6), wash: NSColor(hex: 0x5C4B3B),
+        foreground: NSColor(hex: 0x1F1F1F), dim: NSColor(hex: 0xB3A48C),
+        secondary: NSColor.black.withAlphaComponent(0.55), wash: .black,
         sidebarFill: NSColor(hex: 0x8A6A3A, alpha: 0.06),
-        code: NSColor(hex: 0x5F6B2C), cursor: NSColor(hex: 0x4D4237),
-        selection: NSColor(hex: 0xEADBB8), selectedText: NSColor(hex: 0x2F261E),
+        code: NSColor(hex: 0x5F6B2C), cursor: NSColor(hex: 0x1F1F1F),
+        selection: NSColor(hex: 0xEADBB8), selectedText: NSColor(hex: 0x111111),
         sidebarSelection: NSColor(hex: 0x8A6A3A, alpha: 0.14),
         codeBackground: NSColor(hex: 0x8A6A3A, alpha: 0.10),
         codeBlockBackground: NSColor(hex: 0xEFE5D0),
-        bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x3B3128),
-        send: NSColor(hex: 0x2F261E), sendGlyph: NSColor(hex: 0xF6EFDF),
+        bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x1A1A1A),
+        send: NSColor(hex: 0x1A1A1A), sendGlyph: NSColor(hex: 0xF6EFDF),
         danger: NSColor(hex: 0xB23A2E), diagramBase: NSColor(hex: 0xF6EFDF),
-        bold: NSColor(hex: 0x2F261E), heading: NSColor(hex: 0x9A5B2A), italic: NSColor(hex: 0x6A5846),
+        bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x141414), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xA8473A), listMarker: NSColor(hex: 0xB07D2B),
         quote: NSColor(hex: 0x7F6A8A), link: NSColor(hex: 0x2F6F8F))
 
