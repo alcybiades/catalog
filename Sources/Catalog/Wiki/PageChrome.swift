@@ -288,8 +288,8 @@ final class PageGlassBackdrop: NSView, ThemeRefreshing {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        fade.colors = [NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.6).cgColor, NSColor.clear.cgColor]
-        fade.locations = [0, 0.45, 1]
+        fade.colors = [NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.72).cgColor, NSColor.clear.cgColor]
+        fade.locations = [0, 0.5, 1]
         // Layer coordinates are bottom-up here: opaque at the window's top.
         fade.startPoint = CGPoint(x: 0.5, y: 1)
         fade.endPoint = CGPoint(x: 0.5, y: 0)
@@ -315,7 +315,7 @@ final class PageGlassBackdrop: NSView, ThemeRefreshing {
 
     /// Just a touch of the window's own tint: the blur already keeps text
     /// over the glass legible, and more reads as a dark shadow under the bar.
-    private static var tint: NSColor { Theme.background.withAlphaComponent(0.12) }
+    private static var tint: NSColor { Theme.background.withAlphaComponent(0.22) }
 
     func setShowing(_ showing: Bool) {
         guard showing != isShowing else { return }
