@@ -6,6 +6,8 @@ import SwiftUI
 struct HomeView: View {
     @Environment(WikiPage.self) private var page
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
+    /// Settings' interface font; read here so the page restyles live.
+    @AppStorage(Theme.interfaceFontKey, store: AppState.defaults) private var interfaceFamily = Theme.defaultInterfaceFontFamily
 
     @State private var query = ""
     @State private var appeared = false
@@ -74,7 +76,7 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
-                .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
+                .font(.custom("Hoefler Text", fixedSize: 46).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
@@ -96,7 +98,7 @@ struct HomeView: View {
                     .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
                 TextField("Search Wikipedia", text: $query)
                     .textFieldStyle(.plain)
-                    .font(WikiTheme.body(bodyFamily, size: 16))
+                    .font(WikiTheme.interface(interfaceFamily, size: 16))
                     .foregroundStyle(WikiTheme.foreground)
                     .focused($searchFocused)
                     .autocorrectionDisabled()
@@ -155,7 +157,7 @@ struct HomeView: View {
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(WikiTheme.secondary)
                         Text(title)
-                            .font(WikiTheme.body(bodyFamily, size: 16))
+                            .font(WikiTheme.interface(interfaceFamily, size: 16))
                             .foregroundStyle(WikiTheme.foreground)
                             .lineLimit(1)
                     }
@@ -210,9 +212,9 @@ struct HomeView: View {
             }
         }
         .buttonStyle(.glassPill)
-        // The reading font, like the title and search; each pill keeps its
-        // natural width, and the search field spans the row.
-        .font(WikiTheme.body(bodyFamily, size: 16))
+        // Each pill keeps its natural width in the interface font, and the
+        // search field spans the row.
+        .font(WikiTheme.interface(interfaceFamily, size: 16))
         .lineLimit(1)
         .fixedSize()
         .opacity(appeared ? 1 : 0)
@@ -241,7 +243,7 @@ struct HomeView: View {
                        onForget: ((String) -> Void)? = nil) -> some View {
         VStack(spacing: 10) {
             Text(heading)
-                .font(WikiTheme.interface(size: 11, weight: .semibold))
+                .font(WikiTheme.interface(interfaceFamily, size: 11, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.8)
                 .foregroundStyle(WikiTheme.dim)
@@ -275,7 +277,7 @@ struct HomeView: View {
 
     private var footer: some View {
         Text("Articles from Wikipedia · CC BY-SA 4.0")
-            .font(WikiTheme.interface(size: 11))
+            .font(WikiTheme.interface(interfaceFamily, size: 11))
             .foregroundStyle(WikiTheme.dim)
             .padding(.bottom, 16)
             .padding(.top, 24)
