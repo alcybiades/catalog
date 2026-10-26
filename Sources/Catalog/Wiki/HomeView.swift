@@ -21,8 +21,10 @@ struct HomeView: View {
                 Spacer(minLength: PageMetrics.contentTop)
                 VStack(spacing: 30) {
                     masthead
-                    searchField
-                    if isLauncher { launcherActions }
+                    VStack(spacing: 14) {
+                        if isLauncher { launcherActions }
+                        searchField
+                    }
                     shortcuts
                 }
                 .frame(maxWidth: 560)
@@ -62,20 +64,6 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
-            if isLauncher {
-                Text("Notes & Encyclopedia")
-                    .font(WikiTheme.interface(size: 12, weight: .semibold))
-                    .textCase(.uppercase)
-                    .tracking(2.4)
-                    .foregroundStyle(WikiTheme.foreground.opacity(0.75))
-                    .padding(.top, -8)
-            }
-            Text(isLauncher
-                 ? "Start from Wikipedia, a folder of notes, or a blank page."
-                 : "Every article on Wikipedia, ready to read and question.")
-                .font(WikiTheme.body(bodyFamily, size: 17).italic())
-                .foregroundStyle(WikiTheme.secondary)
-                .multilineTextAlignment(.center)
         }
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 14)
@@ -85,13 +73,13 @@ struct HomeView: View {
         let hasQuery = !query.trimmingCharacters(in: .whitespaces).isEmpty
         return GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
-                HStack(spacing: 12) {
+                HStack(spacing: 9) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 17, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
                     TextField("Search Wikipedia", text: $query)
                         .textFieldStyle(.plain)
-                        .font(WikiTheme.body(bodyFamily, size: 20))
+                        .font(WikiTheme.body(bodyFamily, size: 16))
                         .foregroundStyle(WikiTheme.foreground)
                         .focused($searchFocused)
                         .autocorrectionDisabled()
@@ -109,18 +97,18 @@ struct HomeView: View {
                         .accessibilityLabel("Clear")
                     }
                 }
-                .padding(.horizontal, 20)
-                .frame(height: 58)
-                .glassEffect(.regular.interactive(), in: Capsule())
-                .glassEffectID("field", in: glass)
-                .contentShape(Capsule())
+                .padding(.horizontal, 14)
+                .frame(height: 40)
+                .background(WikiTheme.wash.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(WikiTheme.hairline, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
                 .onTapGesture { searchFocused = true }
 
                 if hasQuery {
                     Button(action: go) {
                         Image(systemName: "arrow.right")
-                            .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 34, height: 34)
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 26, height: 26)
                     }
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.circle)
@@ -137,7 +125,7 @@ struct HomeView: View {
         .scaleEffect(appeared ? 1 : 0.96)
     }
 
-    /// The launcher's other starting points, beside Wikipedia's search.
+    /// The launcher's other starting points, above Wikipedia's search.
     private var launcherActions: some View {
         HStack(spacing: 10) {
             Button { page.homeActions?.newNote() } label: {
@@ -158,14 +146,6 @@ struct HomeView: View {
 
     private var shortcuts: some View {
         VStack(spacing: 18) {
-            Button {
-                page.openRandom()
-            } label: {
-                Label("Surprise me", systemImage: "dice")
-                    .font(WikiTheme.interface(size: 14))
-            }
-            .buttonStyle(.glassPill)
-
             if isLauncher && !recentFiles.isEmpty {
                 chips("Recent files", items: recentFiles.prefix(8).map { ($0.path, $0.lastPathComponent) }) { path in
                     page.homeActions?.openRecent(URL(fileURLWithPath: path))
