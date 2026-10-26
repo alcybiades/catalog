@@ -6,7 +6,6 @@ import SwiftUI
 /// Wikipedia tab it is Encyclopedia's search page.
 struct HomeView: View {
     @Environment(WikiPage.self) private var page
-    @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
     /// Settings' interface font; read here so the page restyles live.
     @AppStorage(Theme.interfaceFontKey, store: AppState.defaults) private var interfaceFamily = Theme.defaultInterfaceFontFamily
 
@@ -266,7 +265,7 @@ struct HomeView: View {
                         onTap(item.id)
                     } label: {
                         Text(item.label)
-                            .font(WikiTheme.body(bodyFamily, size: 15))
+                            .font(WikiTheme.interface(interfaceFamily, size: 15))
                             .foregroundStyle(WikiTheme.foreground.opacity(0.9))
                             .lineLimit(1)
                             .padding(.horizontal, 14)
