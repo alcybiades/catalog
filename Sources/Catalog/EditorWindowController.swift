@@ -827,6 +827,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.dismissReferences()
         textView.referencesEnabled = true
         workspace = Workspace(root: root)
+        // Wiki links resolve against the index, which fills in asynchronously.
+        workspace?.onIndexChanged = { [weak self] in self?.textView.rehighlight() }
         sidebar.setRoot(root)
         sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600)); mediaMode = media
         sidebar.mediaMode = media
