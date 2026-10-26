@@ -210,7 +210,11 @@ struct HomeView: View {
             }
         }
         .buttonStyle(.glassPill)
-        .font(WikiTheme.interface(size: 14))
+        // The reading font, like the title and search; each pill keeps its
+        // natural width, and the search field spans the row.
+        .font(WikiTheme.body(bodyFamily, size: 16))
+        .lineLimit(1)
+        .fixedSize()
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
     }
