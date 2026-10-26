@@ -34,7 +34,8 @@ folder. Notes can embed images inline.
 
 ![Plasma, Light, and Dark themes](docs/5.png)
 
-Choose Plasma (translucent), Dark, Light, or Paper in Settings (⌘,).
+Choose Plasma, Dark, Dark Glass, Light, Light Glass, or Paper in Settings (⌘,).
+Plasma and the Glass themes are translucent.
 
 ## Install
 
