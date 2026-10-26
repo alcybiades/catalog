@@ -42,8 +42,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var lastAutosave = Date()
 
     // Pages beyond files: Wikipedia tabs host SwiftUI under the tab strip,
-    // notes and images get the glass action cluster, and the assistant
-    // lives in a right sidebar.
+    // notes and images get the glass action cluster and title pill, and
+    // the assistant floats in the lower-right corner or docks at the right.
     let chrome = WindowChrome()
     let agent = AgentSession()
     private var container: NSView!
@@ -51,13 +51,21 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var pageActions: PageHostingView<PageActionsView>!
     private var backButton: PageHostingView<WikiBackButton>!
     private var titlePill: PageHostingView<WikiTitlePill>!
+    private var chatHost: PageHostingView<ChatDock>!
+    private let dockHint = ChatDockHint()
+    private var chatTrailing: NSLayoutConstraint!
+    private var chatBottom: NSLayoutConstraint!
+    /// Where a header drag started: the mouse and the dock's offsets.
+    private var chatDragStart: (mouse: NSPoint, trailing: CGFloat, bottom: CGFloat)?
     private let pageGlass = PageGlassBackdrop()
     private let agentContainer = NSView()
     private var agentHost: PageHostingView<AgentPanel>!
     private let agentDivider = SidebarDivider()
     private var agentWidthConstraint: NSLayoutConstraint!
-    private(set) var agentOpen = false
-    private(set) var agentWidth: CGFloat = 380
+    var agentOpen: Bool { chrome.chatOpen }
+    /// Whether the assistant opens docked as the sidebar, else floating.
+    private(set) var agentPrefersDocked = false
+    private(set) var agentWidth: CGFloat = 330
     private var reloadingFromDisk = false
 
     init(documents: [Document] = [], app: AppDelegate?) {
@@ -244,11 +252,20 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         titlePill = PageHostingView(rootView: WikiTitlePill(chrome: chrome))
         titlePill.sizingOptions = [.intrinsicContentSize]
         titlePill.passesThrough = true
-        agentHost = PageHostingView(rootView: AgentPanel(session: agent) { [weak self] in self?.toggleAgent(nil) })
+        chatHost = PageHostingView(rootView: ChatDock(chrome: chrome, session: agent, actions: agentActions(docked: false)))
+        chatHost.sizingOptions = []
+        chatHost.hitRegion = { [weak self] view, point in
+            guard let self else { return false }
+            if self.chrome.chatFloating { return true }
+            let size = ChatDock.size
+            let button = NSRect(x: view.bounds.maxX - size, y: view.isFlipped ? view.bounds.maxY - size : 0, width: size, height: size)
+            return NSBezierPath(ovalIn: button).contains(point)
+        }
+        agentHost = PageHostingView(rootView: AgentPanel(session: agent, style: .docked, actions: agentActions(docked: true)))
         agentHost.sizingOptions = []
         agentContainer.wantsLayer = true
         agentContainer.layer?.masksToBounds = true
-        for view in [pageGlass, pageActions!, backButton!, titlePill!, agentHost!, agentContainer, agentDivider] as [NSView] {
+        for view in [pageGlass, pageActions!, backButton!, titlePill!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
         agentContainer.addSubview(agentHost)
@@ -270,7 +287,23 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         container.addSubview(statusPill)
         container.addSubview(agentContainer)
         container.addSubview(agentDivider)
+        container.addSubview(dockHint)
+        container.addSubview(chatHost)
         agentWidthConstraint = agentContainer.widthAnchor.constraint(equalToConstant: 0)
+        chatTrailing = chatHost.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: chatRest.trailing)
+        chatBottom = chatHost.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: chatRest.bottom)
+        // The open panel's size, shrinking to fit small windows.
+        let preferredWidth = chatHost.widthAnchor.constraint(equalToConstant: ChatDock.panelSize.width)
+        let preferredHeight = chatHost.heightAnchor.constraint(equalToConstant: ChatDock.panelSize.height)
+        preferredWidth.priority = .defaultHigh
+        preferredHeight.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            preferredWidth, preferredHeight,
+            chatHost.widthAnchor.constraint(lessThanOrEqualTo: contentGuide.widthAnchor, constant: -2 * ChatDock.margin),
+            chatHost.heightAnchor.constraint(lessThanOrEqualTo: container.heightAnchor, constant: -(PageMetrics.barBottom + 12 - chatRest.bottom)),
+            chatHost.widthAnchor.constraint(greaterThanOrEqualToConstant: ChatDock.size),
+            chatHost.heightAnchor.constraint(greaterThanOrEqualToConstant: ChatDock.size),
+        ])
 
         NSLayoutConstraint.activate([
             contentGuide.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
@@ -320,6 +353,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -3),
             statusPill.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -20),
             statusPill.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            chatTrailing, chatBottom,
+            dockHint.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            dockHint.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            dockHint.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            dockHint.widthAnchor.constraint(equalToConstant: 320),
         ])
 
         NotificationCenter.default.addObserver(
@@ -404,10 +442,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // The scroll view starts at the window's top edge, under the tabs.
         let titleTop = PageMetrics.tabBarHeight + titleGap
         // Space above the body text (title area) and below it (the plain
-        // padding plus clearance so the last line never sits under the
-        // status pill in the bottom-right corner).
+        // padding plus clearance so the last line can scroll clear of the
+        // assistant button and status pill in the bottom-right corner).
         let topSpace = titleTop + titleHeight + titleGap
-        let bottomSpace = Theme.padding + 26
+        let bottomSpace = Theme.padding + ChatDock.clearance
 
         let available = textView.bounds.width
         let horizontal = max(Theme.padding, (available - Theme.maxTextWidth) / 2)
@@ -1180,9 +1218,23 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         pageGlass.setShowing(scrolled)
         // Folders keep the gallery's fast path: no glass, no bar.
-        pageActions.isHidden = !(doc.kind == .markdown || doc.kind == .image || doc.kind == .wiki) || viewing
+        let hasBar = doc.kind == .markdown || doc.kind == .image || doc.kind == .wiki
+        pageActions.isHidden = !hasBar || viewing
+        updateChatDock()
         backButton.isHidden = doc.wiki?.canGoBack != true || viewing
-        titlePill.isHidden = !(doc.wiki?.showsTitle == true && doc.wiki?.article != nil) || viewing
+        // The title pill appears once the page's own title is under the bar.
+        let title: String?
+        switch doc.kind {
+        case .markdown:
+            let titleScrolledAway = scrollView.contentView.bounds.origin.y > titleView.frame.maxY - PageMetrics.barTop
+            title = titleScrolledAway ? doc.displayTitle : nil
+        case .wiki:
+            title = doc.wiki?.showsTitle == true && !viewing ? doc.wiki?.article?.title : nil
+        default:
+            title = nil
+        }
+        if let title, chrome.title != title { chrome.title = title }
+        titlePill.isHidden = title == nil
     }
 
     /// Contents and Share for the page on screen.
@@ -1308,27 +1360,136 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         setAgentOpen(!agentOpen)
     }
 
-    func setAgentOpen(_ open: Bool, width: CGFloat? = nil) {
+    func setAgentOpen(_ open: Bool, width: CGFloat? = nil, docked: Bool? = nil) {
         if let width { agentWidth = max(280, min(width, 720)) }
-        agentOpen = open
-        chrome.chatOpen = open
+        if let docked { agentPrefersDocked = docked }
+        setChatMode(open ? (agentPrefersDocked ? .docked : .floating) : .closed)
+    }
+
+    private func setChatMode(_ mode: WindowChrome.ChatMode, animated: Bool = true) {
+        guard mode != chrome.chatMode else { return }
+        if mode != .closed { agentPrefersDocked = mode == .docked }
+        chrome.chatMorphAnimated = animated
+        chrome.chatMode = mode
+        agent.activeStyle = mode == .docked ? .docked : mode == .floating ? .floating : nil
         updateAgentPanel()
-        if open {
-            AgentAccounts.shared.refresh()
+        updateChatDock()
+        switch mode {
+        case .docked:
             SidebarTransition.fadeIn([agentHost])
             window?.makeFirstResponder(agentHost)
-            agent.requestFocus()
-        } else {
+        case .floating:
+            window?.makeFirstResponder(chatHost)
+        case .closed:
             focusCurrentPage()
+        }
+        if mode != .closed {
+            AgentAccounts.shared.refresh()
+            agent.requestFocus()
         }
         app?.sessionChanged()
     }
 
     private func updateAgentPanel() {
         let available = window?.contentView?.bounds.width ?? 900
-        agentWidthConstraint.constant = agentOpen ? min(agentWidth, max(260, available - sidebarWidthConstraint.constant - 320)) : 0
-        agentContainer.isHidden = !agentOpen
-        agentDivider.isHidden = !agentOpen
+        let docked = chrome.chatMode == .docked
+        agentWidthConstraint.constant = docked ? min(agentWidth, max(260, available - sidebarWidthConstraint.constant - 320)) : 0
+        agentContainer.isHidden = !docked
+        agentDivider.isHidden = !docked
+    }
+
+    /// The button shows on pages with a bar while the assistant is closed;
+    /// the floating panel shows over any page.
+    private func updateChatDock() {
+        let doc = currentDocument
+        let hasBar = doc.kind == .markdown || doc.kind == .image || doc.kind == .wiki
+        let showsButton = hasBar && doc.wiki?.viewer == nil && chrome.chatMode == .closed
+        chatHost.isHidden = !(showsButton || chrome.chatFloating)
+    }
+
+    /// The floating panel's resting offsets: its bottom-right corner is the
+    /// button's, above the status pill.
+    private var chatRest: (trailing: CGFloat, bottom: CGFloat) {
+        (-ChatDock.margin, -(ChatDock.clearance - ChatDock.size))
+    }
+
+    private func agentActions(docked: Bool) -> AgentPanel.Actions {
+        AgentPanel.Actions(
+            close: { [weak self] in self?.setAgentOpen(false) },
+            toggleDocked: { [weak self] in
+                guard let self else { return }
+                self.setChatMode(self.chrome.chatMode == .docked ? .floating : .docked)
+            },
+            dragChanged: { [weak self] in self?.chatDragChanged(fromDock: docked) },
+            dragEnded: { [weak self] in self?.chatDragEnded(fromDock: docked) })
+    }
+
+    private var mouseInContainer: NSPoint? {
+        guard let window else { return nil }
+        return container.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    }
+
+    /// Dragging the floating panel moves it, offering to dock at the
+    /// window's right edge. Dragging the sidebar's header out into the
+    /// page previews the floating panel under the pointer.
+    private func chatDragChanged(fromDock: Bool) {
+        guard let mouse = mouseInContainer else { return }
+        if fromDock {
+            let out = mouse.x < agentContainer.frame.minX - 40
+            if out != chrome.chatPreview {
+                chrome.chatMorphAnimated = false
+                chrome.chatPreview = out
+                updateChatDock()
+                container.layoutSubtreeIfNeeded()
+            }
+            guard out else { return }
+            // Hold the panel by its header, just right of the title's start.
+            let size = chatHost.frame.size
+            chatTrailing.constant = mouse.x - 60 + size.width - contentGuide.frame.maxX
+            chatBottom.constant = -(mouse.y + 24 - size.height)
+        } else {
+            if chatDragStart == nil { chatDragStart = (mouse, chatTrailing.constant, chatBottom.constant) }
+            guard let start = chatDragStart else { return }
+            chatTrailing.constant = start.trailing + mouse.x - start.mouse.x
+            chatBottom.constant = start.bottom - (mouse.y - start.mouse.y)
+            dockHint.setShowing(mouse.x > container.bounds.maxX - 72)
+        }
+    }
+
+    private func chatDragEnded(fromDock: Bool) {
+        chatDragStart = nil
+        if fromDock {
+            guard chrome.chatPreview else { return }
+            chrome.chatPreview = false
+            setChatMode(.floating, animated: false)
+            settleChatDock()
+        } else if dockHint.isShowing {
+            dockHint.setShowing(false)
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.15
+                chatHost.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                guard let self else { return }
+                self.chrome.chatMorphAnimated = false
+                self.setChatMode(.docked)
+                (self.chatTrailing.constant, self.chatBottom.constant) = self.chatRest
+                self.chatHost.alphaValue = 1
+            })
+        } else {
+            settleChatDock()
+        }
+    }
+
+    /// Springs the floating panel back to its corner.
+    private func settleChatDock() {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.38
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+            context.allowsImplicitAnimation = true
+            chatTrailing.animator().constant = chatRest.trailing
+            chatBottom.animator().constant = chatRest.bottom
+            container.layoutSubtreeIfNeeded()
+        }
     }
 
     /// What the assistant sees: the open tab and the working directory —
