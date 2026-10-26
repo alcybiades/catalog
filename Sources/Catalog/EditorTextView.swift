@@ -78,11 +78,14 @@ final class EditorTextView: NSTextView {
         let glyph = layoutManager.glyphIndex(for: point, in: textContainer, fractionOfDistanceThroughGlyph: &fraction)
         guard glyph < layoutManager.numberOfGlyphs else { return nil }
         let index = layoutManager.characterIndexForGlyph(at: glyph)
+        // The nearest glyph is reported even for clicks in the blank run past
+        // a line's end, so require the point to land on the glyph itself —
+        // its full width (proportional fonts have slim letters) and the
+        // line's height.
         let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
-        // The inset rejects clicks in the blank run past a line's end. Scale
-        // it to the glyph so narrow letters stay clickable.
-        let hit = rect.insetBy(dx: min(3, rect.width / 3), dy: min(2, rect.height / 3))
-        guard hit.contains(point), index < textStorage.length else { return nil }
+        let line = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        guard point.x >= rect.minX, point.x <= rect.maxX, point.y >= line.minY, point.y <= line.maxY,
+              index < textStorage.length else { return nil }
         if let destination = textStorage.attribute(.fileReference, at: index, effectiveRange: nil) as? String {
             return (destination, false)
         }
