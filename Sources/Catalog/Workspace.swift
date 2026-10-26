@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import UniformTypeIdentifiers
 
 /// Filesystem paths are identities; links are standard source-relative Markdown.
@@ -202,41 +203,180 @@ final class FileNode {
         cachedChildren = nodes
         return nodes
     }
+    /// Children already listed, without touching the filesystem.
+    var loadedChildren: [FileNode]? { cachedChildren }
+    /// Drops the listing so the next expansion re-reads it.
+    func invalidate() { cachedChildren = nil }
+    /// Re-lists the directory, keeping the existing node (and so its
+    /// expansion state) for every entry that is still there.
+    func reloadChildren() {
+        let existing = Dictionary((cachedChildren ?? []).map { ($0.url.path, $0) }, uniquingKeysWith: { first, _ in first })
+        cachedChildren = nil
+        cachedChildren = children.map { node in
+            existing[node.url.path].flatMap { $0.isDirectory == node.isDirectory ? $0 : nil } ?? node
+        }
+    }
 }
 
 final class Workspace {
+    /// Posted on the main queue when entries appear, vanish or are renamed
+    /// beneath a workspace root; `userInfo["change"]` is a `Change`. Edits to
+    /// a file's contents (including atomic saves) don't post it.
+    static let didChangeNotification = Notification.Name("CatalogWorkspaceDidChange")
+    struct Change {
+        /// Canonical (symlink-resolved) path of the workspace root.
+        let root: String
+        /// Canonical paths of directories whose listings changed, or nil when
+        /// anything beneath `root` may have.
+        let directories: Set<String>?
+        func affects(path: String, includingDescendants: Bool = false) -> Bool {
+            guard let directories else {
+                return path == root || path.hasPrefix(root + "/") || (includingDescendants && root.hasPrefix(path + "/"))
+            }
+            return directories.contains(path) || (includingDescendants && directories.contains { $0.hasPrefix(path + "/") })
+        }
+        func post() {
+            NotificationCenter.default.post(name: Workspace.didChangeNotification, object: nil, userInfo: ["change": self])
+        }
+    }
+    static func canonicalPath(_ url: URL) -> String {
+        guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL.path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     let root: URL
     private(set) var files: [URL] = []
+    /// Root-relative paths parallel to `files`, so the `@` picker doesn't
+    /// recompute one per file on every keystroke.
+    private var relativePaths: [String] = []
     /// Lower-cased file name *and* extension-less stem → matching files.
     /// Wiki links name a note rather than a path, so they resolve through
     /// this instead of the filesystem.
     private var namesIndex: [String: [URL]] = [:]
-    private var generation = UUID()
     var onIndexChanged: (() -> Void)?
-    init(root: URL) { self.root = root.standardizedFileURL; refreshIndex() }
+    private let canonicalRoot: String
+    /// Serializes index walks with watcher events.
+    private let queue = DispatchQueue(label: "Catalog.Workspace", qos: .utility)
+    /// Visible entry names per canonical directory as of the last walk, so
+    /// an atomic save (a rename onto the same name) costs one listing, not
+    /// a walk. Only touched on `queue`.
+    private var listings: [String: Set<String>] = [:]
+    private var stream: FSEventStreamRef?
+
+    init(root: URL) {
+        self.root = root.standardizedFileURL
+        canonicalRoot = Workspace.canonicalPath(self.root)
+        refreshIndex()
+        watch()
+    }
+    deinit {
+        guard let stream else { return }
+        // Tear down on the stream's own queue; a callback already running
+        // there finishes first and then finds its weak workspace gone.
+        queue.async { FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream) }
+    }
+
     func refreshIndex() {
-        let token = UUID(); generation = token
-        let root = root
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var result: [URL] = []
-            let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles, .skipsPackageDescendants])
-            while let url = enumerator?.nextObject() as? URL {
-                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-                if values?.isSymbolicLink == true { enumerator?.skipDescendants(); continue }
-                if values?.isDirectory != true { result.append(url) }
-            }
-            let sorted = result.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-            let names = Workspace.buildNamesIndex(sorted)
-            DispatchQueue.main.async {
-                guard let self, self.generation == token else { return }
-                self.files = sorted
-                self.namesIndex = names
-                self.onIndexChanged?()
+        queue.async { [weak self] in self?.reindex() }
+    }
+
+    /// Runs on `queue`.
+    private func reindex() {
+        var entries: [(url: URL, path: String)] = []
+        var listings: [String: Set<String>] = [canonicalRoot: []]
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey], options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        while let url = enumerator?.nextObject() as? URL {
+            let path = canonical(url.path)
+            listings[(path as NSString).deletingLastPathComponent, default: []].insert(url.lastPathComponent)
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey])
+            if values?.isSymbolicLink == true { enumerator?.skipDescendants(); continue }
+            if values?.isDirectory != true {
+                entries.append((url, String(path.dropFirst(canonicalRoot.count + 1))))
+            } else if values?.isPackage != true, listings[path] == nil {
+                listings[path] = []
             }
         }
+        entries.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        self.listings = listings
+        let files = entries.map(\.url), relativePaths = entries.map(\.path)
+        let names = Workspace.buildNamesIndex(files)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.files = files
+            self.relativePaths = relativePaths
+            self.namesIndex = names
+            self.onIndexChanged?()
+        }
     }
+
+    /// Maps an enumerated path onto the canonical root, whichever spelling
+    /// of the root the enumerator reported it under.
+    private func canonical(_ path: String) -> String {
+        if path.hasPrefix(canonicalRoot + "/") { return path }
+        if path.hasPrefix(root.path + "/") { return canonicalRoot + path.dropFirst(root.path.count) }
+        return path
+    }
+
+    private static func listing(of directory: String) -> Set<String>? {
+        (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: directory), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
+            .map { Set($0.map(\.lastPathComponent)) }
+    }
+
+    private final class WeakWorkspace {
+        weak var workspace: Workspace?
+        init(_ workspace: Workspace) { self.workspace = workspace }
+    }
+
+    private func watch() {
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passRetained(WeakWorkspace(self)).toOpaque(), retain: nil,
+                                           release: { Unmanaged<WeakWorkspace>.fromOpaque($0!).release() }, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+            guard let info, let workspace = Unmanaged<WeakWorkspace>.fromOpaque(info).takeUnretainedValue().workspace,
+                  let paths = unsafeBitCast(paths, to: NSArray.self) as? [String] else { return }
+            workspace.filesystemChanged(paths, flags: Array(UnsafeBufferPointer(start: flags, count: count)))
+        }
+        guard let stream = FSEventStreamCreate(nil, callback, &context, [canonicalRoot] as CFArray,
+                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.3,
+                                               FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)) else { return }
+        FSEventStreamSetDispatchQueue(stream, queue)
+        FSEventStreamStart(stream)
+        self.stream = stream
+    }
+
+    /// Runs on `queue`. Publishes only directories whose visible listing
+    /// actually differs, then re-walks the index.
+    private func filesystemChanged(_ paths: [String], flags: [FSEventStreamEventFlags]) {
+        let rescanFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)
+        var directories = Set<String>()
+        var rescan = false
+        for (path, flag) in zip(paths, flags) {
+            if flag & rescanFlags != 0 { rescan = true; continue }
+            // Hidden entries never reach the tree, the index or the gallery.
+            guard path.hasPrefix(canonicalRoot + "/"), !path.dropFirst(canonicalRoot.count).contains("/.") else { continue }
+            directories.insert((path as NSString).deletingLastPathComponent)
+        }
+        if !rescan {
+            // Unknown directories are package interiors or already gone
+            // with their parent, whose own listing reports the change.
+            directories = directories.filter { directory in
+                listings[directory].map { Workspace.listing(of: directory) != $0 } ?? false
+            }
+            guard !directories.isEmpty else { return }
+        }
+        let change = Change(root: canonicalRoot, directories: rescan ? nil : directories)
+        DispatchQueue.main.async { change.post() }
+        reindex()
+    }
+
     func matches(_ query: String) -> [URL] {
-        Array(files.filter { query.isEmpty || FileReference.relativePath(to: $0, from: root).localizedCaseInsensitiveContains(query) }.prefix(80))
+        guard !query.isEmpty else { return Array(files.prefix(80)) }
+        var result: [URL] = []
+        for (url, path) in zip(files, relativePaths) where path.localizedCaseInsensitiveContains(query) {
+            result.append(url)
+            if result.count == 80 { break }
+        }
+        return result
     }
 
     private static func buildNamesIndex(_ files: [URL]) -> [String: [URL]] {

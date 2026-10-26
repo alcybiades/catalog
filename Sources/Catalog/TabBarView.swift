@@ -1,7 +1,7 @@
 import AppKit
 
 /// Minimal terminal-styled tab strip with hover-close and drag-to-detach.
-final class TabBarView: NSView {
+final class TabBarView: NSView, ThemeRefreshing {
 
     /// Equal gap from the window's top-left corner to the first tab, both axes.
     static let cornerPadding: CGFloat = 15
@@ -106,6 +106,8 @@ final class TabBarView: NSView {
     }
     func fadeInTabs() { SidebarTransition.fadeIn([tabScroll]) }
 
+    func applyTheme() { toggle.contentTintColor = Theme.secondary }
+
     @objc private func toggleSidebar() { onToggleSidebar?() }
 
     func update(tabs: [(name: String, edited: Bool)], selected: Int) {
@@ -193,7 +195,7 @@ private final class NewTabButton: NSView {
     func setHovered(_ value: Bool) {
         guard hovered != value else { return }
         hovered = value
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(value ? 0.06 : 0).cgColor
+        layer?.backgroundColor = Theme.wash.withAlphaComponent(value ? 0.06 : 0).cgColor
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -253,7 +255,7 @@ private final class TabItemView: NSView {
         layer?.cornerRadius = TabBarView.pillRadius
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = active
-            ? NSColor.white.withAlphaComponent(0.08).cgColor
+            ? Theme.wash.withAlphaComponent(0.08).cgColor
             : NSColor.clear.cgColor
 
         label.font = Theme.interfaceFont(size: 13.5)

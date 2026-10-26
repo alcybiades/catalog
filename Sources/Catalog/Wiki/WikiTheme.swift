@@ -11,44 +11,63 @@ extension Color {
             opacity: opacity
         )
     }
-
-    init?(hexString: String) {
-        var value: UInt64 = 0
-        guard Scanner(string: hexString).scanHexInt64(&value), value <= 0xFFFFFF else { return nil }
-        self.init(hex: UInt32(value))
-    }
 }
 
-/// "Neon Noir" for the SwiftUI pages (Wikipedia, home, assistant). The
+/// The current palette for the SwiftUI pages (Wikipedia, home, assistant).
+/// Views reading these colors re-render when the theme changes. The
 /// semantic colors and interface font follow Catalog's preferences; the
 /// reading typeface and size are the reader's own.
 enum WikiTheme {
     static var defaults: UserDefaults { AppState.defaults }
 
-    static let background = Color(hex: 0x141414)
-    static let backgroundOpacity = 0.60
+    private static var palette: Palette { ThemeStore.shared.palette }
 
-    static let foreground = Color(hex: 0x63D0FF)
-    static let dim = Color(hex: 0x526078)
+    static var colorScheme: ColorScheme { palette.isDark ? .dark : .light }
+    static var background: Color { Color(nsColor: palette.background) }
+    static var foreground: Color { Color(nsColor: palette.foreground) }
+    static var dim: Color { Color(nsColor: palette.dim) }
     /// Translucent secondary chrome, as in Catalog's editor.
-    static let secondary = Color.white.opacity(0.5)
-    static let hairline = Color.white.opacity(0.08)
-    static let selection = Color(hex: 0x334A7D)
-    static let code = Color(hex: 0x55E6A5)
+    static var secondary: Color { Color(nsColor: palette.secondary) }
+    /// Fills drawn at low opacity: white on dark themes, ink on light ones.
+    static var wash: Color { Color(nsColor: palette.wash) }
+    static var hairline: Color { wash.opacity(0.08) }
+    static var sidebarFill: Color { Color(nsColor: palette.sidebarFill) }
+    static var selection: Color { Color(nsColor: palette.selection) }
+    static var code: Color { Color(nsColor: palette.code) }
+    static var codeBlockBackground: Color { Color(nsColor: palette.codeBlockBackground) }
+    static var bubble: Color { Color(nsColor: palette.bubble) }
+    static var bubbleText: Color { Color(nsColor: palette.bubbleText) }
+    static var danger: Color { Color(nsColor: palette.danger) }
+    static var diagramBase: Color { Color(nsColor: palette.diagramBase) }
 
-    private static func semantic(_ key: String, _ fallback: UInt32) -> Color {
-        guard let stored = defaults.string(forKey: key) else { return Color(hex: fallback) }
-        if stored == "none" { return foreground }
-        return Color(hexString: stored) ?? Color(hex: fallback)
+    /// "No color" draws in the foreground.
+    private static func semantic(_ color: NSColor?) -> Color {
+        color.map { Color(nsColor: $0) } ?? foreground
     }
 
-    static let heading = semantic("headingColor", 0xA4BEEF)
-    static let bold = semantic("boldColor", 0xFFFFFF)
-    static let italic = semantic("italicColor", 0xD7E0FF)
-    static let link = semantic("linkColor", 0x7DD3FC)
-    static let quote = semantic("quoteColor", 0xBF8EE8)
-    static let listMarker = semantic("listMarkerColor", 0xFFD166)
-    static let inlineCode = semantic("inlineCodeColor", 0xFFB86C)
+    static var heading: Color { semantic(palette.heading) }
+    static var bold: Color { semantic(palette.bold) }
+    static var italic: Color { semantic(palette.italic) }
+    static var link: Color { semantic(palette.link) }
+    static var quote: Color { semantic(palette.quote) }
+    static var listMarker: Color { semantic(palette.listMarker) }
+    static var inlineCode: Color { semantic(palette.inlineCode) }
+
+    /// Colors article and chat text by its inline intents, when it's drawn
+    /// rather than when it's parsed, so cached articles follow the theme.
+    static func styled(_ text: AttributedString) -> AttributedString {
+        var text = text
+        let bold = bold, italic = italic, inlineCode = inlineCode
+        let underline = Text.LineStyle(pattern: .solid, color: link.opacity(0.25))
+        for run in text.runs {
+            if run.link != nil { text[run.range].underlineStyle = underline }
+            guard let intent = run.inlinePresentationIntent else { continue }
+            if intent.contains(.code) { text[run.range].foregroundColor = inlineCode }
+            else if intent.contains(.stronglyEmphasized) { text[run.range].foregroundColor = bold }
+            else if intent.contains(.emphasized) { text[run.range].foregroundColor = italic }
+        }
+        return text
+    }
 
     static let lineSpacing: CGFloat = 4
     static let maxTextWidth: CGFloat = 720

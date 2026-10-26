@@ -23,8 +23,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let preview = FilePreview()
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarAnimationID: UUID?
+    /// The folder the user opened. Without one, the sidebar browses
+    /// ~/Documents, starting collapsed.
     private(set) var workspace: Workspace?
-    private(set) var sidebarCollapsed = false
+    private(set) var sidebarCollapsed = true
     private(set) var sidebarWidth: CGFloat = 220
     private(set) var mediaMode = false
     private var previewOrigin: NSRect?
@@ -133,12 +135,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Single visual line: a huge fixed container width, clipped by frame.
         titleView.textContainer?.widthTracksTextView = false
         titleView.textContainer?.size = NSSize(width: 10000, height: 10000)
-        titleView.textColor = Theme.secondary
-        titleView.insertionPointColor = Theme.cursor
-        titleView.selectedTextAttributes = [
-            .backgroundColor: Theme.selection,
-            .foregroundColor: NSColor(hex: 0xF8FAFC),
-        ]
         titleView.delegate = self
         textView.addSubview(titleView)
 
@@ -146,7 +142,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .overlay
-        scrollView.verticalScroller?.knobStyle = .light
         scrollView.documentView = textView
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         // Notes scroll up under the tab strip and the glass; keep the
@@ -165,7 +160,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = Theme.interfaceFont(size: 11)
-        statusLabel.textColor = Theme.secondary
         statusLabel.alignment = .right
         statusLabel.lineBreakMode = .byTruncatingMiddle
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -181,7 +175,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // froze until the fingers lifted.
         statusPill = StatusPill(label: statusLabel)
         statusPill.wantsLayer = true
-        statusPill.layer?.backgroundColor = Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
         statusPill.layer?.cornerRadius = 7
         statusPill.layer?.cornerCurve = .continuous
         statusPill.layer?.masksToBounds = true
@@ -384,8 +377,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         NotificationCenter.default.addObserver(
             self, selector: #selector(agentWillModifyFile(_:)), name: .agentWillModifyFile, object: nil)
         NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(
             self, selector: #selector(agentDidModifyFiles(_:)), name: .agentDidModifyFiles, object: nil)
 
+        sidebar.setRoot(AgentSession.defaultDirectory)
+        sidebar.isWatched = false
+        applyTheme()
         updateSidebar()
         updateAgentPanel()
         textView.rehighlight()
@@ -467,6 +465,32 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         )
     }
 
+    /// Colors this controller sets on plain AppKit views.
+    private func applyTheme() {
+        titleView.textColor = Theme.secondary
+        titleView.insertionPointColor = Theme.cursor
+        titleView.selectedTextAttributes = [
+            .backgroundColor: Theme.selection,
+            .foregroundColor: Theme.palette.selectedText,
+        ]
+        statusLabel.textColor = Theme.secondary
+        statusPill.layer?.backgroundColor = Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
+        scrollView.verticalScroller?.knobStyle = Theme.palette.isDark ? .light : .dark
+    }
+
+    /// Live theme switch: the window, its views, and the open note's text.
+    /// SwiftUI pages follow the palette on their own.
+    @objc private func themeDidChange() {
+        guard let window else { return }
+        applyThemeBackdrop(to: window)
+        applyTheme()
+        textView.applyTheme()
+        selectionToolbar.applyTheme()
+        window.contentView?.refreshTheme()
+        textView.rehighlight()
+        refreshChrome()
+    }
+
     func applyFontChange() {
         textView.rehighlight()
         statusLabel.font = Theme.interfaceFont(size: 11)
@@ -527,7 +551,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             menu.addItem(item)
         }
-        menu.appearance = NSAppearance(named: .darkAqua)
+        menu.appearance = Theme.palette.appearance
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.isFlipped ? anchor.bounds.maxY + 6 : -6), in: anchor)
     }
 
@@ -604,7 +628,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         switchTab(to: (current - 1 + documents.count) % documents.count)
     }
 
-    private func refreshChrome(typing: Bool = false) {
+    private func refreshChrome() {
         let doc = currentDocument
         let editable = doc.kind == .markdown
         let isWiki = doc.kind == .wiki
@@ -622,28 +646,37 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Notes and images get the same glass cluster as Wikipedia pages.
         if chrome.page !== doc.wiki { chrome.page = doc.wiki }
         updatePageGlass()
-        if typing {
-            outlineTimer?.invalidate()
-            outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-                self?.updatePageActions()
-            }
-        } else {
-            updatePageActions()
-        }
-        tabBar.update(tabs: documents.map { ($0.name, $0.edited) }, selected: current)
+        updatePageActions()
+        updateTabs()
         updateStatus()
         updateAgentContext()
         app?.sessionChanged()
     }
 
+    private func updateTabs() {
+        tabBar.update(tabs: documents.map { ($0.name, $0.edited) }, selected: current)
+    }
+
     // MARK: - Text changes → autosave + status
 
+    /// Runs per keystroke, so it stays lean: the text changes nothing in the
+    /// session, agent context or window layout. Only the first edit marks the
+    /// tab; text-derived chrome (outline, share, word count) waits for a pause.
     func textDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextView) === textView else { return }
         guard !reloadingFromDisk else { return }
-        currentDocument.edited = true
-        window?.isDocumentEdited = true
-        refreshChrome(typing: true)
+        if !currentDocument.edited {
+            currentDocument.edited = true
+            window?.isDocumentEdited = true
+            updateTabs()
+        }
+        outlineTimer?.invalidate()
+        outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            updatePageActions()
+            // A "saved" flash restores the count itself when it ends.
+            if savedFlashTimer?.isValid != true { updateStatus() }
+        }
         scheduleAutosave()
     }
 
@@ -686,21 +719,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         autosaveNow()
     }
 
+    /// Assigns only changed strings; each assignment invalidates layout.
     private func updateStatus() {
-        window?.title = currentDocument.name
+        let doc = currentDocument
+        if window?.title != doc.name { window?.title = doc.name }
         // A Wikipedia tab's status is its article's address, linking to it.
-        guard currentDocument.kind != .wiki else {
-            let url = currentDocument.wiki?.article?.url
+        guard doc.kind != .wiki else {
+            let url = doc.wiki?.article?.url
             statusPill.link = url
-            statusLabel.stringValue = url.map { ($0.host() ?? "") + $0.path(percentEncoded: false) } ?? ""
+            let address = url.map { ($0.host() ?? "") + $0.path(percentEncoded: false) } ?? ""
+            if statusLabel.stringValue != address { statusLabel.stringValue = address }
             return
         }
         statusPill.link = nil
-        let words = currentDocument.storage.string
+        let words = doc.storage.string
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
-        statusLabel.stringValue = "\(currentDocument.name) · \(words)w"
-        if window?.firstResponder !== titleView {
-            titleView.string = currentDocument.displayTitle
+        let status = "\(doc.name) · \(words)w"
+        if statusLabel.stringValue != status { statusLabel.stringValue = status }
+        if window?.firstResponder !== titleView, titleView.string != doc.displayTitle {
+            titleView.string = doc.displayTitle
         }
     }
 
@@ -771,8 +808,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     private func updateSidebar(animated: Bool = false) {
         guard animated || sidebarAnimationID == nil, let content = window?.contentView else { return }
-        let visible = workspace != nil
-        let expanded = visible && !sidebarCollapsed
+        let visible = true
+        let expanded = !sidebarCollapsed
         let width = min(sidebarWidth, max(150, content.bounds.width - 240))
         let animate = animated && visible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let animationID = UUID()
@@ -799,11 +836,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
     }
 
-    func restoreWorkspace(root: URL, collapsed: Bool, width: CGFloat, media: Bool) {
+    /// Restores the sidebar: browsing `root`, or ~/Documents without one.
+    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat, media: Bool) {
         textView.dismissReferences()
-        textView.referencesEnabled = true
-        workspace = Workspace(root: root)
-        sidebar.setRoot(root)
+        textView.referencesEnabled = root != nil
+        workspace = root.map(Workspace.init(root:))
+        // Wiki links resolve against the index, which fills in asynchronously.
+        workspace?.onIndexChanged = { [weak self] in self?.textView.rehighlight() }
+        sidebar.isWatched = root != nil
+        sidebar.setRoot(root ?? AgentSession.defaultDirectory)
         sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600)); mediaMode = media
         sidebar.mediaMode = media
         updateSidebar()
@@ -821,7 +862,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.dismissReferences()
         textView.referencesEnabled = false
         workspace = nil
+        sidebar.setRoot(AgentSession.defaultDirectory)
         mediaMode = false
+        sidebar.mediaMode = false
         updateSidebar()
         refreshChrome()
     }
@@ -1090,6 +1133,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if panel.runModal() == .OK, let url = panel.url {
             currentDocument.url = url
             app?.addRecentFile(url)
+            refreshChrome()
         }
     }
 
@@ -1102,7 +1146,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             doc.edited = false
             RecoveryStore.remove(doc)
             window?.isDocumentEdited = false
-            refreshChrome()
+            // Saving clears only the edited mark; a new URL refreshed already.
+            updateTabs()
             return true
         } catch {
             NSSound.beep()
@@ -1543,6 +1588,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             RecoveryStore.remove(doc)
         }
         window?.isDocumentEdited = currentDocument.edited
+        updateTabs()
     }
 
     /// The assistant changed files: follow moves, reload open notes, and
@@ -1570,7 +1616,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             if doc.kind == .markdown { reloadFromDisk(doc) }
             if doc === currentDocument { changedCurrent = true }
         }
-        if workspace != nil { sidebar.refresh() }
+        sidebar.refresh()
         refreshChrome()
         if changedCurrent { flashStatus("updated by assistant") }
     }
@@ -1647,6 +1693,8 @@ extension EditorWindowController: NSMenuItemValidation {
         case #selector(toggleAgent(_:)):
             item.title = agentOpen ? "Hide Assistant" : "Show Assistant"
             return true
+        case #selector(closeFolder(_:)):
+            return workspace != nil
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
             return currentDocument.kind == .markdown
         default:
