@@ -19,6 +19,7 @@ test:
 		Sources/Catalog/Workspace.swift \
 		Sources/Catalog/ReferencePicker.swift \
 		Sources/Catalog/MarkdownHighlighter.swift \
+		Sources/Catalog/CodeSyntax.swift \
 		Sources/Catalog/ImageLoader.swift \
 		Sources/Catalog/EditorTextView.swift \
 		Support/BehaviorTests/main.swift

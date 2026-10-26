@@ -86,15 +86,18 @@ checkTrue("unordered marker renders with a bullet glyph",
           tv.textStorage?.attribute(.glyphInfo, at: 0, effectiveRange: nil) is NSGlyphInfo)
 
 // Typing restyles only the edited lines; random edits (fences opening and
-// closing, list items appearing) must leave exactly what a full pass does.
+// closing, their languages changing, comments and strings spanning lines,
+// list items appearing) must leave exactly what a full pass does.
 do {
     var seed: UInt64 = 0x5EED
     func random(_ n: Int) -> Int {
         seed = seed &* 6364136223846793005 &+ 1442695040888963407
         return Int((seed >> 33) % UInt64(max(n, 1)))
     }
-    let pieces = ["```\n", "~~~\n", "```", "- item\n", "1. one\n", "  - [ ] task\n", "> quote *i*\n",
-                  "# Head\n", "text **b** `c` [l](x) [[w]]\n", "---\n", "\n", "-", " ", "*", "`", "x"]
+    let pieces = ["```\n", "~~~\n", "```", "```swift\n", "```py\n", "~~~json\n", "sh", "- item\n", "1. one\n",
+                  "  - [ ] task\n", "> quote *i*\n", "# Head\n", "text **b** `c` [l](x) [[w]]\n", "---\n", "\n",
+                  "func f() {}\n", "import os\n", "{\"k\": 1}\n", "/* c", "*/", "\"\"\"", "# x\n",
+                  "-", " ", "*", "`", "x", "\""]
     // NSGlyphInfo compares by identity; compare the glyph it draws.
     func normalized(_ text: NSAttributedString) -> NSAttributedString {
         let copy = NSMutableAttributedString(attributedString: text)
@@ -122,6 +125,14 @@ do {
     }
     check("incremental highlighting matches a full pass", mismatch ?? "", "")
 }
+
+check("code language from info string or a cautious guess",
+      [CodeLanguage(info: "py title=x"), CodeLanguage(info: "TS"), CodeLanguage(info: "{.zsh}"),
+       CodeLanguage(info: "haskell"), CodeLanguage(info: "  ")].map { $0.map { "\($0)" } ?? "none" }
+          .joined(separator: " ") + " | " +
+      ["{", "#!/bin/zsh", "import os", "import SwiftUI", "const x = 1", "package main",
+       "let x = 1", "Hello there"].map { "\(CodeLanguage.guess(firstLine: $0))" }.joined(separator: " "),
+      "python javascript shell plain none | json shell python swift javascript go plain plain")
 
 tv = makeTV("*italic*", caret: 1) // visually before the first character
 tv.rehighlight()
