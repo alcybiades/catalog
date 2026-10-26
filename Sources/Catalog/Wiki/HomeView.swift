@@ -10,6 +10,9 @@ struct HomeView: View {
     @State private var query = ""
     @State private var appeared = false
     @State private var recentFiles: [URL] = []
+    @State private var actionsWidth: CGFloat = 0
+    @State private var suggestions: [String] = []
+    @State private var highlighted: Int?
     @FocusState private var searchFocused: Bool
     @Namespace private var glass
 
@@ -21,10 +24,26 @@ struct HomeView: View {
                 Spacer(minLength: PageMetrics.contentTop)
                 VStack(spacing: 30) {
                     masthead
-                    VStack(spacing: 14) {
-                        if isLauncher { launcherActions }
+                    VStack(spacing: 20) {
+                        if isLauncher {
+                            launcherActions
+                                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { actionsWidth = $0 }
+                        }
+                        // Spans the action pills exactly, or a fixed column
+                        // on a Wikipedia tab.
                         searchField
+                            .frame(width: isLauncher && actionsWidth > 0 ? actionsWidth : nil)
+                            .frame(maxWidth: isLauncher ? nil : 460)
+                            .overlay(alignment: .topLeading) {
+                                if !suggestions.isEmpty {
+                                    suggestionList
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .offset(y: Self.fieldHeight + 8)
+                                        .transition(.opacity)
+                                }
+                            }
                     }
+                    .zIndex(1)
                     shortcuts
                 }
                 .frame(maxWidth: 560)
@@ -84,6 +103,13 @@ struct HomeView: View {
                         .focused($searchFocused)
                         .autocorrectionDisabled()
                         .onSubmit(go)
+                        .onKeyPress(.downArrow) { moveHighlight(1) }
+                        .onKeyPress(.upArrow) { moveHighlight(-1) }
+                        .onKeyPress(.escape) {
+                            guard !suggestions.isEmpty else { return .ignored }
+                            suggestions = []
+                            return .handled
+                        }
                     if hasQuery {
                         Button {
                             query = ""
@@ -97,11 +123,11 @@ struct HomeView: View {
                         .accessibilityLabel("Clear")
                     }
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 40)
-                .background(WikiTheme.wash.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(WikiTheme.hairline, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+                .frame(height: Self.fieldHeight)
+                .glassEffect(.regular.interactive(), in: Capsule())
+                .glassEffectID("field", in: glass)
+                .contentShape(Capsule())
                 .onTapGesture { searchFocused = true }
 
                 if hasQuery {
@@ -123,6 +149,57 @@ struct HomeView: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hasQuery)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.96)
+        .task(id: query) { await loadSuggestions() }
+    }
+
+    private static let fieldHeight: CGFloat = 42
+
+    /// Article titles starting with the query; ↑/↓ pick one, Return opens it.
+    private var suggestionList: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2)
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(suggestions.enumerated()), id: \.element) { index, title in
+                Button { pick(title) } label: {
+                    Text(title)
+                        .font(WikiTheme.body(bodyFamily, size: 15))
+                        .foregroundStyle(WikiTheme.foreground)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(index == highlighted ? WikiTheme.wash.opacity(0.08) : .clear, in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .onHover { if $0 { highlighted = index } }
+            }
+        }
+        .padding(6)
+        .background(WikiTheme.background.opacity(0.85), in: shape)
+        .glassEffect(.regular, in: shape)
+    }
+
+    private func loadSuggestions() async {
+        let term = query.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else {
+            suggestions = []
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled else { return }
+        let titles = (try? await WikipediaClient.suggestions(for: term)) ?? []
+        guard !Task.isCancelled else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            suggestions = titles
+            highlighted = nil
+        }
+    }
+
+    private func moveHighlight(_ delta: Int) -> KeyPress.Result {
+        guard !suggestions.isEmpty else { return .ignored }
+        let next = (highlighted ?? -1) + delta
+        highlighted = next < 0 ? nil : min(next, suggestions.count - 1)
+        return .handled
     }
 
     /// The launcher's other starting points, above Wikipedia's search.
@@ -207,10 +284,20 @@ struct HomeView: View {
     }
 
     private func go() {
+        if let highlighted, suggestions.indices.contains(highlighted) {
+            pick(suggestions[highlighted])
+            return
+        }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        pick(trimmed)
+    }
+
+    private func pick(_ title: String) {
         searchFocused = false
-        page.open(trimmed)
+        suggestions = []
+        highlighted = nil
+        page.open(title)
         query = ""
     }
 }

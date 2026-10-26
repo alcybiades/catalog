@@ -42,6 +42,16 @@ enum WikipediaClient {
         }
     }
 
+    /// Article titles starting with `prefix`, for the search field.
+    static func suggestions(for prefix: String) async throws -> [String] {
+        let json = try await get([
+            "action": "query", "list": "prefixsearch", "pssearch": prefix, "pslimit": "6", "psnamespace": "0",
+        ])
+        guard let query = json["query"] as? [String: Any],
+              let hits = query["prefixsearch"] as? [[String: Any]] else { return [] }
+        return hits.compactMap { $0["title"] as? String }
+    }
+
     static func randomTitle() async throws -> String {
         let json = try await get([
             "action": "query", "list": "random", "rnnamespace": "0", "rnlimit": "1",
