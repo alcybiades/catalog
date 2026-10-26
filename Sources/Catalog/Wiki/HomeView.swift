@@ -62,6 +62,14 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
+            if isLauncher {
+                Text("Notes & Encyclopedia")
+                    .font(WikiTheme.interface(size: 12, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(2.4)
+                    .foregroundStyle(WikiTheme.foreground.opacity(0.75))
+                    .padding(.top, -8)
+            }
             Text(isLauncher
                  ? "Start from Wikipedia, a folder of notes, or a blank page."
                  : "Every article on Wikipedia, ready to read and question.")
