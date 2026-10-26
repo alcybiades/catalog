@@ -741,5 +741,17 @@ MainActor.assumeIsolated {
     pages.window?.orderOut(nil)
 }
 controller.window?.orderOut(nil); restored.window?.orderOut(nil)
+
+let draftDoc = Document(url: fixture.appendingPathComponent("Draft.md"), content: "unsaved")
+_ = RecoveryStore.draft(forPath: "/nonexistent")  // builds the index before the writes
+RecoveryStore.write(draftDoc)
+check("recovery draft is found by path", RecoveryStore.draft(forPath: fixture.appendingPathComponent("Draft.md").path)?.content == "unsaved")
+draftDoc.url = fixture.appendingPathComponent("Renamed Draft.md")
+RecoveryStore.write(draftDoc)
+check("recovery index follows a renamed buffer",
+      RecoveryStore.draft(forPath: fixture.appendingPathComponent("Draft.md").path) == nil
+      && RecoveryStore.draft(forPath: draftDoc.url!.path)?.id == draftDoc.recoveryID)
+RecoveryStore.remove(draftDoc)
+check("removed recovery draft is not found", RecoveryStore.draft(forPath: draftDoc.url!.path) == nil)
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
