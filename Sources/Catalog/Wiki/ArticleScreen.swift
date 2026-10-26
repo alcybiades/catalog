@@ -29,7 +29,7 @@ struct ArticleScreen: View {
                     .padding(.horizontal, WikiTheme.padding)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8)
-                    .padding(.bottom, 40)
+                    .padding(.bottom, ChatDock.clearance + 16)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
             .contentMargins(.top, PageMetrics.contentTop, for: .scrollContent)

@@ -1,14 +1,27 @@
 import SwiftUI
 import AppKit
 
-/// The assistant's right sidebar, like an editor's agent panel: header on
-/// the tab row, the conversation, and a growing glass input at the bottom.
+/// The assistant: a header, the conversation, and a growing glass input.
+/// It floats above the page's corner or docks as the right sidebar (with
+/// its header on the tab row); dragging the header moves between the two.
 struct AgentPanel: View {
+    enum Style { case floating, docked }
+
+    /// What the panel asks of its window.
+    struct Actions {
+        /// Minimizes the floating panel, or hides the sidebar.
+        var close: () -> Void
+        /// Docks the floating panel, or floats the sidebar.
+        var toggleDocked: () -> Void
+        var dragChanged: () -> Void
+        var dragEnded: () -> Void
+    }
+
     @Bindable var session: AgentSession
-    let onClose: () -> Void
+    let style: Style
+    let actions: Actions
 
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
-    @State private var draft = ""
     @FocusState private var focused: Bool
 
     private var font: ReaderFont { ReaderFont(family: bodyFamily, size: 17) }
@@ -25,17 +38,20 @@ struct AgentPanel: View {
             input
         }
         .background {
-            HStack(spacing: 0) {
-                Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1)
-                Color.black.opacity(0.10)
+            if style == .docked {
+                HStack(spacing: 0) {
+                    Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1)
+                    Color.black.opacity(0.10)
+                }
+                .ignoresSafeArea()
             }
-            .ignoresSafeArea()
         }
+        .onExitCommand { if style == .floating { actions.close() } }
         .tint(WikiTheme.foreground)
         .preferredColorScheme(.dark)
-        .onChange(of: session.focusRequest) { focused = true }
+        .onChange(of: session.focusRequest) { if session.activeStyle == style { focused = true } }
         .onAppear {
-            focused = true
+            if session.activeStyle == style { focused = true }
             AgentAccounts.shared.refresh()
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -49,64 +65,81 @@ struct AgentPanel: View {
 
     // MARK: Header
 
+    /// Dragging anywhere on the header (the title included) moves the
+    /// panel between floating and docked.
     private var header: some View {
         HStack(spacing: 8) {
-            conversationMenu
+            conversationTitle
             Spacer(minLength: 0)
             iconButton("square.and.pencil", help: "New conversation") {
                 withAnimation(.snappy) { session.newConversation() }
             }
-            iconButton("sidebar.right", help: "Hide Assistant (⌘J)", action: onClose)
+            if style == .floating {
+                iconButton("sidebar.right", help: "Dock to the Side", action: actions.toggleDocked)
+                iconButton("arrow.down.right.and.arrow.up.left", help: "Minimize (⌘J)", action: actions.close)
+            } else {
+                iconButton("rectangle.inset.bottomright.filled", help: "Float", action: actions.toggleDocked)
+                iconButton("sidebar.right", help: "Hide Assistant (⌘J)", action: actions.close)
+            }
         }
         .padding(.leading, 16)
         .padding(.trailing, 10)
         .frame(height: 31)
-        .padding(.top, TabBarView.cornerPadding)
+        .padding(.top, style == .docked ? TabBarView.cornerPadding : 12)
         .padding(.bottom, 8)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .global)
+            .onChanged { _ in actions.dragChanged() }
+            .onEnded { _ in actions.dragEnded() })
     }
 
-    /// The conversation's title, opening a list of this window's conversations.
-    private var conversationMenu: some View {
-        Menu {
-            Button("New Conversation", systemImage: "square.and.pencil") { session.newConversation() }
-            Divider()
-            ForEach(session.conversations) { conversation in
-                Button {
-                    session.select(conversation)
-                } label: {
-                    Label(conversation.title + " · " + conversation.backend.label,
-                          systemImage: conversation === session.current ? "checkmark" : conversation.backend.symbol)
-                }
-            }
-            if session.conversations.count > 1 {
-                Divider()
-                Button("Close Conversation", systemImage: "xmark") { session.close(session.current) }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(session.current.items.isEmpty ? "Assistant" : session.current.title)
-                        .font(WikiTheme.interface(size: 13, weight: .semibold))
-                        .foregroundStyle(WikiTheme.heading)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(WikiTheme.secondary)
-                }
-                Text(session.contextLabel.isEmpty ? (session.workingDirectory.path as NSString).abbreviatingWithTildeInPath
-                     : session.contextLabel)
-                    .font(WikiTheme.interface(size: 11))
-                    .foregroundStyle(WikiTheme.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .contentTransition(.opacity)
-            }
-            .contentShape(Rectangle())
+    /// The conversation's title; clicking it lists this window's
+    /// conversations. A menu here would swallow the header drag, so the
+    /// list is an AppKit menu popped up on click.
+    private var conversationTitle: some View {
+        titleLabel
+            .onTapGesture(perform: showConversations)
+            .help("Conversations")
+    }
+
+    private func showConversations() {
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem("New Conversation", symbol: "square.and.pencil") { session.newConversation() })
+        menu.addItem(.separator())
+        for conversation in session.conversations {
+            let item = ActionMenuItem(conversation.title + " · " + conversation.backend.label,
+                                      symbol: conversation.backend.symbol) { session.select(conversation) }
+            item.state = conversation === session.current ? .on : .off
+            menu.addItem(item)
         }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-        .help("Conversations")
+        if session.conversations.count > 1 {
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Close Conversation", symbol: "xmark") { session.close(session.current) })
+        }
+        let mouse = NSEvent.mouseLocation
+        menu.popUp(positioning: nil, at: NSPoint(x: mouse.x - 12, y: mouse.y - 14), in: nil)
+    }
+
+    private var titleLabel: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Text(session.current.items.isEmpty ? "Assistant" : session.current.title)
+                    .font(WikiTheme.interface(size: 13, weight: .semibold))
+                    .foregroundStyle(WikiTheme.heading)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(WikiTheme.secondary)
+            }
+            Text(session.contextLabel.isEmpty ? (session.workingDirectory.path as NSString).abbreviatingWithTildeInPath
+                 : session.contextLabel)
+                .font(WikiTheme.interface(size: 11))
+                .foregroundStyle(WikiTheme.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .contentTransition(.opacity)
+        }
+        .contentShape(Rectangle())
     }
 
     private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
@@ -125,36 +158,16 @@ struct AgentPanel: View {
     // MARK: Empty state
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 14) {
             Spacer(minLength: 0)
-            Image(systemName: "sparkle")
-                .font(.system(size: 26, weight: .light))
-                .foregroundStyle(WikiTheme.heading.gradient)
-            Text(intro)
-                .font(font.scaled(0.9))
-                .foregroundStyle(WikiTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text("How can I help?")
+                .font(font.scaled(1.15))
+                .foregroundStyle(WikiTheme.heading)
             if let notice = accountNotice { notice }
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(suggestions, id: \.label) { suggestion in
-                    Button {
-                        session.send(suggestion.prompt)
-                    } label: {
-                        Label(suggestion.label, systemImage: suggestion.icon)
-                            .font(WikiTheme.interface(size: 13))
-                            .foregroundStyle(WikiTheme.foreground)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: Capsule())
-                }
-            }
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Shown when the chosen model needs installing or signing in.
@@ -189,48 +202,6 @@ struct AgentPanel: View {
         }
     }
 
-    private var intro: String {
-        let folder = (session.workingDirectory.path as NSString).abbreviatingWithTildeInPath
-        if !session.backend.canEditFiles {
-            return "Ask about what’s open. Apple Intelligence runs on this Mac and can’t edit files; pick Claude or Codex below for that."
-        }
-        switch session.contextKind {
-        case .article: return "Ask about this article, or have notes written from it into \(folder)."
-        case .note: return "Ask about this note, or have it edited. I can also create and change other notes in \(folder)."
-        case .image: return "Ask about this image, or have notes written about it in \(folder)."
-        default: return "Ask anything, or have notes created and edited in \(folder)."
-        }
-    }
-
-    private var suggestions: [(label: String, prompt: String, icon: String)] {
-        switch session.contextKind {
-        case .article:
-            return [
-                ("Summarize", "Summarize this article in a few sentences.", "text.alignleft"),
-                ("Key facts", "What are the key facts and dates I should know?", "list.star"),
-                ("Explain simply", "Explain the core idea of this article simply, as if I'm new to the subject.", "lightbulb"),
-                ("Save study notes", "Write a concise Markdown study note on this article — key ideas, dates, and people — and save it in the working directory.", "square.and.pencil"),
-            ]
-        case .note:
-            return [
-                ("Summarize", "Summarize this note in a few sentences.", "text.alignleft"),
-                ("Tighten the writing", "Tighten the prose of this note without changing its meaning or structure, and apply the edits.", "wand.and.stars"),
-                ("Continue writing", "Continue this note where it leaves off, in the same voice, and apply it.", "text.append"),
-                ("Find related notes", "Search the working directory for notes related to this one and list them with a line on each.", "magnifyingglass"),
-            ]
-        case .image:
-            return [
-                ("Describe", "Describe this image.", "eye"),
-                ("Write a caption note", "Write a short Markdown note that embeds this image with a caption and description, and save it next to the image.", "square.and.pencil"),
-            ]
-        default:
-            return [
-                ("What's here?", "Give me an overview of the working directory.", "folder"),
-                ("Start a note", "Create a new note called Ideas.md with a short template for capturing ideas, and open it.", "square.and.pencil"),
-            ]
-        }
-    }
-
     // MARK: Transcript
 
     private var transcript: some View {
@@ -259,7 +230,7 @@ struct AgentPanel: View {
     private var input: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Ask, or ask for changes…", text: $draft, axis: .vertical)
+                TextField("Ask, or ask for changes…", text: $session.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(WikiTheme.interface(size: 14))
                     .foregroundStyle(WikiTheme.foreground)
@@ -299,7 +270,7 @@ struct AgentPanel: View {
 
     @ViewBuilder
     private var sendButton: some View {
-        let canSend = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let canSend = !session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if session.isResponding {
             Button(action: session.stop) {
                 Image(systemName: "stop.fill")
@@ -327,9 +298,9 @@ struct AgentPanel: View {
     }
 
     private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !session.isResponding else { return }
-        draft = ""
+        session.draft = ""
         session.send(text)
     }
 }
@@ -553,4 +524,20 @@ private struct NoticeCard: View {
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WikiTheme.hairline, lineWidth: 1))
     }
+}
+
+/// A menu item that runs a closure.
+private final class ActionMenuItem: NSMenuItem {
+    private let perform: () -> Void
+
+    init(_ title: String, symbol: String, perform: @escaping () -> Void) {
+        self.perform = perform
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    }
+
+    required init(coder: NSCoder) { fatalError() }
+
+    @objc private func run() { perform() }
 }

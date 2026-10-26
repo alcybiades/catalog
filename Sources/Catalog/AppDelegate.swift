@@ -304,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 "tabs": tabs,
                 "currentTab": currentTab,
                 "agentOpen": controller.agentOpen,
+                "agentDocked": controller.agentPrefersDocked,
                 "agentWidth": Double(controller.agentWidth),
                 "current": controller.currentDocument.url?.path ?? "",
                 "frame": NSStringFromRect(window.frame),
@@ -347,7 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 controller.switchTab(to: index)
             }
             if entry["agentOpen"] as? Bool == true {
-                controller.setAgentOpen(true, width: CGFloat(entry["agentWidth"] as? Double ?? 380))
+                controller.setAgentOpen(true, width: CGFloat(entry["agentWidth"] as? Double ?? 330),
+                                       docked: entry["agentDocked"] as? Bool ?? true)
             }
         }
         // Legacy single-window session from earlier builds.

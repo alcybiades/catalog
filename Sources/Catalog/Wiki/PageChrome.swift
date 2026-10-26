@@ -34,31 +34,43 @@ enum ShareSpec {
 }
 
 /// Window-wide state the SwiftUI chrome reads: whether the assistant panel
-/// is open, and the current note or image's outline and share items.
+/// is open, and the current page's title, outline, and share items.
 @MainActor @Observable
 final class WindowChrome {
-    var chatOpen = false
+    /// Where the assistant is: tucked into its button, floating above the
+    /// page's lower-right corner, or docked as the right sidebar.
+    enum ChatMode { case closed, floating, docked }
+
+    var chatMode = ChatMode.closed
+    /// The floating panel shown while the docked sidebar is dragged out.
+    var chatPreview = false
+    /// False to swap the button and panel without the morph.
+    var chatMorphAnimated = true
     var outline: [OutlineEntry] = []
     var share: ShareSpec = .none
     /// Images have no outline; the Contents button stays, disabled.
     var hasOutline = true
-    /// The Wikipedia page on screen, if any, for its Back button and title.
+    /// The Wikipedia page on screen, if any, for its Back button.
     var page: WikiPage?
+    /// The page's title, shown in the bar's pill once its heading scrolls away.
+    var title = ""
 
     @ObservationIgnored var toggleChat: () -> Void = {}
     @ObservationIgnored var jump: (OutlineEntry?) -> Void = { _ in }
+
+    var chatOpen: Bool { chatMode != .closed }
+    var chatFloating: Bool { chatMode == .floating || chatPreview }
 }
 
 // MARK: - Action cluster
 
-/// The upper-right glass capsule: Contents, Share, and the assistant.
+/// The upper-right glass capsule: Contents and Share.
 struct PageActions: View {
     let outline: [OutlineEntry]
     let contentsEnabled: Bool
     let share: ShareSpec
     /// nil jumps to the top.
     let onJump: (OutlineEntry?) -> Void
-    let chrome: WindowChrome
 
     private let width = PageMetrics.control + 4
 
@@ -66,14 +78,6 @@ struct PageActions: View {
         HStack(spacing: 0) {
             contents
             shareButton
-            Button(action: chrome.toggleChat) {
-                Image(systemName: chrome.chatOpen ? "bubble.left.fill" : "bubble.left")
-                    .frame(width: width, height: PageMetrics.control)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(chrome.chatOpen ? "Hide Assistant (⌘J)" : "Ask the Assistant (⌘J)")
-            .accessibilityLabel("Assistant")
         }
         .font(.system(size: 15, weight: .medium))
         .foregroundStyle(WikiTheme.foreground)
@@ -135,10 +139,99 @@ struct PageActionsView: View {
 
     var body: some View {
         PageActions(outline: chrome.outline, contentsEnabled: chrome.hasOutline,
-                    share: chrome.share, onJump: chrome.jump, chrome: chrome)
+                    share: chrome.share, onJump: chrome.jump)
             .tint(WikiTheme.foreground)
             .preferredColorScheme(.dark)
             .fixedSize()
+    }
+}
+
+// MARK: - Assistant dock
+
+/// The assistant's floating home in the page's lower-right corner: a glass
+/// button that morphs into a chat panel, keeping its bottom-right corner
+/// and corner radius, and morphs back when minimized. The hosting view is
+/// always the open panel's size; it only takes clicks inside the button
+/// while closed.
+struct ChatDock: View {
+    let chrome: WindowChrome
+    let session: AgentSession
+    let actions: AgentPanel.Actions
+
+    static let size: CGFloat = 52
+    /// Distance from the page's right edge.
+    static let margin: CGFloat = 20
+    /// Height the button and the status pill beneath it take from the
+    /// page's bottom edge.
+    static let clearance: CGFloat = size + 10 + 20 + 10
+    static let panelSize = CGSize(width: 360, height: 560)
+    static let morph = Animation.spring(response: 0.44, dampingFraction: 0.86)
+
+    var body: some View {
+        GeometryReader { proxy in
+            let open = chrome.chatFloating
+            let shape = RoundedRectangle(cornerRadius: Self.size / 2, style: .continuous)
+            ZStack(alignment: .bottomTrailing) {
+                // Glass alone doesn't reliably blur the AppKit text beneath;
+                // once open, a near-opaque backdrop keeps the chat legible.
+                WikiTheme.background.opacity(open ? 0.94 : 0)
+                if open {
+                    AgentPanel(session: session, style: .floating, actions: actions)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .transition(.opacity.animation(.easeOut(duration: open ? 0.22 : 0.12)))
+                } else {
+                    Button(action: chrome.toggleChat) {
+                        Image(systemName: "bubble.left")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(WikiTheme.foreground)
+                            .frame(width: Self.size, height: Self.size)
+                            .contentShape(shape)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Ask the Assistant (⌘J)")
+                    .accessibilityLabel("Assistant")
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                }
+            }
+            .frame(width: open ? proxy.size.width : Self.size,
+                   height: open ? proxy.size.height : Self.size, alignment: .bottomTrailing)
+            .clipShape(shape)
+            .glassEffect(.regular.interactive(!open), in: shape)
+            .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        }
+        .animation(chrome.chatMorphAnimated ? Self.morph : nil, value: chrome.chatFloating)
+        .tint(WikiTheme.foreground)
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// Where a floating panel dragged to the window's right edge will dock.
+final class ChatDockHint: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = Theme.foreground.withAlphaComponent(0.10).cgColor
+        layer?.borderColor = Theme.foreground.withAlphaComponent(0.35).cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = ChatDock.size / 2
+        layer?.cornerCurve = .continuous
+        alphaValue = 0
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private(set) var isShowing = false
+
+    func setShowing(_ showing: Bool) {
+        guard showing != isShowing else { return }
+        isShowing = showing
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            animator().alphaValue = showing ? 1 : 0
+        }
     }
 }
 
@@ -212,6 +305,8 @@ final class PageGlassBackdrop: NSView {
 final class PageHostingView<Content: View>: NSHostingView<Content> {
     /// Click-through views never take mouse events (the glass overlay).
     var passesThrough = false
+    /// Limits clicks to part of the view, in its own coordinates.
+    var hitRegion: ((NSView, NSPoint) -> Bool)?
 
     required init(rootView: Content) {
         super.init(rootView: rootView)
@@ -222,7 +317,9 @@ final class PageHostingView<Content: View>: NSHostingView<Content> {
     @MainActor required dynamic init?(coder: NSCoder) { fatalError() }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        passesThrough ? nil : super.hitTest(point)
+        if passesThrough { return nil }
+        if let hitRegion, let superview, !hitRegion(self, convert(point, from: superview)) { return nil }
+        return super.hitTest(point)
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -286,12 +383,12 @@ struct WikiBackButton: View {
     }
 }
 
-/// The article's title, centered in the bar once its heading scrolls away.
+/// The page's title, centered in the bar once its heading scrolls away.
 struct WikiTitlePill: View {
     let chrome: WindowChrome
 
     var body: some View {
-        Text(chrome.page?.article?.title ?? "")
+        Text(chrome.title)
             .font(WikiTheme.interface(size: 14, weight: .semibold))
             .foregroundStyle(WikiTheme.heading)
             .lineLimit(1)

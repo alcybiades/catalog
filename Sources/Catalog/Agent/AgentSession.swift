@@ -15,6 +15,10 @@ final class AgentSession {
     var contextLabel = ""
     var contextKind: AgentContext.Kind = .home
     var workingDirectory: URL = AgentSession.defaultDirectory
+    /// The unsent message, shared by the floating and docked panels.
+    var draft = ""
+    /// The panel on screen, which alone takes focus requests.
+    @ObservationIgnored var activeStyle: AgentPanel.Style?
     /// Bumped to focus the input field.
     private(set) var focusRequest = 0
 
