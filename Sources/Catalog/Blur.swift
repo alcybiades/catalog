@@ -16,7 +16,7 @@ private func CGSSetWindowBackgroundBlurRadius(
 
 /// Keep AppKit's window shape and shadow while drawing our own controls.
 /// The full-size content view paints right up to that single native clip.
-final class WriteWindow: NSWindow {
+final class CatalogWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -34,7 +34,7 @@ func applyTerminalBackdrop(to window: NSWindow) -> NSView {
     if #available(macOS 26.0, *) {
         // Tahoe chooses its larger (26 pt) native outline for unified-toolbar
         // windows. Keep the toolbar empty: our tab row supplies the controls.
-        let toolbar = NSToolbar(identifier: "WriteWindowShape")
+        let toolbar = NSToolbar(identifier: "CatalogWindowShape")
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbarStyle = .unified

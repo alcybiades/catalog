@@ -3,7 +3,7 @@ import AppKit
 
 /// Which model answers in the assistant sidebar. Claude Code and Codex run
 /// the user's own CLIs, signed in with their Claude or ChatGPT subscription;
-/// Write never sees those credentials.
+/// Catalog never sees those credentials.
 enum AgentBackend: Hashable {
     case claudeCode(model: String)
     case codex(model: String)
@@ -106,7 +106,7 @@ enum ShellEnvironment {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-ilc", "printf '__WRITE_PATH__%s__END__' \"$PATH\""]
+        process.arguments = ["-ilc", "printf '__CATALOG_PATH__%s__END__' \"$PATH\""]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -116,7 +116,7 @@ enum ShellEnvironment {
         while process.isRunning, Date() < deadline { usleep(20_000) }
         if process.isRunning { process.terminate(); return nil }
         let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        guard let start = text.range(of: "__WRITE_PATH__"), let end = text.range(of: "__END__", range: start.upperBound..<text.endIndex) else { return nil }
+        guard let start = text.range(of: "__CATALOG_PATH__"), let end = text.range(of: "__END__", range: start.upperBound..<text.endIndex) else { return nil }
         return String(text[start.upperBound..<end.lowerBound])
     }
 }
@@ -126,7 +126,7 @@ enum ShellEnvironment {
 @MainActor @Observable
 final class AgentAccounts {
     static let shared = AgentAccounts()
-    static let didChange = Notification.Name("WriteAgentAccountsDidChange")
+    static let didChange = Notification.Name("CatalogAgentAccountsDidChange")
 
     enum Status: Equatable {
         case checking
@@ -217,13 +217,13 @@ final class AgentAccounts {
     /// browser to sign in with the subscription account).
     func signIn(claude: Bool) {
         let command = claude ? "claude auth login" : "codex login"
-        let script = FileManager.default.temporaryDirectory.appendingPathComponent("Write Sign In.command")
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("Catalog Sign In.command")
         let body = """
         #!/bin/zsh -il
-        echo "Signing in to \(claude ? "Claude" : "Codex") for Write…"
+        echo "Signing in to \(claude ? "Claude" : "Codex") for Catalog…"
         \(command)
         echo
-        echo "Done. You can close this window and return to Write."
+        echo "Done. You can close this window and return to Catalog."
         """
         do {
             try body.write(to: script, atomically: true, encoding: .utf8)
@@ -321,7 +321,7 @@ final class CLIProcess: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
         var data = Data()
-        let reader = DispatchQueue(label: "write.capture")
+        let reader = DispatchQueue(label: "catalog.capture")
         let group = DispatchGroup()
         group.enter()
         reader.async { data = output.fileHandleForReading.readDataToEndOfFile(); group.leave() }

@@ -20,7 +20,7 @@ extension Color {
 }
 
 /// "Neon Noir" for the SwiftUI pages (Wikipedia, home, assistant). The
-/// semantic colors and interface font follow Write's preferences; the
+/// semantic colors and interface font follow Catalog's preferences; the
 /// reading typeface and size are the reader's own.
 enum WikiTheme {
     static var defaults: UserDefaults { AppState.defaults }
@@ -30,7 +30,7 @@ enum WikiTheme {
 
     static let foreground = Color(hex: 0x63D0FF)
     static let dim = Color(hex: 0x526078)
-    /// Translucent secondary chrome, as in Write.
+    /// Translucent secondary chrome, as in Catalog's editor.
     static let secondary = Color.white.opacity(0.5)
     static let hairline = Color.white.opacity(0.08)
     static let selection = Color(hex: 0x334A7D)
@@ -60,7 +60,7 @@ enum WikiTheme {
     static let bodyFontKey = "wikiBodyFont"
     static let fontSizeRange: ClosedRange<Double> = 14...30
 
-    /// Starts from Write's text size until changed here.
+    /// Starts from the editor's text size until changed here.
     static var defaultFontSize: Double {
         min(max(Double(Theme.fontSize), fontSizeRange.lowerBound), fontSizeRange.upperBound)
     }

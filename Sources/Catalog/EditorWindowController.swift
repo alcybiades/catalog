@@ -63,7 +63,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     init(documents: [Document] = [], app: AppDelegate?) {
         self.documents = documents.isEmpty ? [Document()] : documents
         self.app = app
-        let window = WriteWindow(
+        let window = CatalogWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
             styleMask: [.titled, .fullSizeContentView, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -847,7 +847,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     private func openLink(_ url: URL, anchor: String?) {
-        // A link to a file Write cannot display hands off to the system
+        // A link to a file Catalog cannot display hands off to the system
         // rather than opening an unreadable tab.
         if FileKind.classify(url) == .unsupported, FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.open(url)

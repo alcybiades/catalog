@@ -1,5 +1,5 @@
 import AppKit
-precondition(AppState.isTesting, "Compile with -D WRITE_TESTING before running the gallery benchmark")
+precondition(AppState.isTesting, "Compile with -D CATALOG_TESTING before running the gallery benchmark")
 _ = NSApplication.shared
 NSApp.setActivationPolicy(.regular)
 guard CommandLine.arguments.count == 2, !CommandLine.arguments[1].isEmpty else {

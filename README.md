@@ -1,13 +1,16 @@
-# Write
+# Catalog
 
-![Write — a translucent terminal-styled markdown editor for macOS](docs/write.png)
+![Catalog — a translucent terminal-styled markdown editor for macOS](docs/catalog.png)
 
-A markdown editor ... but with vibes
+A catalog for creative and research work: browse a folder of notes and
+images, read Wikipedia, write in Markdown, and ask Claude or Codex about any
+of it ... with vibes. (Formerly Write; your settings, session, and drafts
+carry over on first launch.)
 
 ## Build & install
 
 ```
-make run       # build, bundle, and launch dist/Write.app
+make run       # build, bundle, and launch dist/Catalog.app
 make install   # copy to /Applications
 make test      # editing, workspace, and image regressions
 ```
@@ -15,11 +18,13 @@ make test      # editing, workspace, and image regressions
 Builds with Xcode Command Line Tools (`swift` + `make`). Xcode 26 or newer is
 needed for Tahoe's native window styling; the Makefile prefers the full Xcode
 installation when available. Set `DEVELOPER_DIR` to select a different Xcode.
-The bundle includes `Support/AppIcon.icns` automatically.
+The app icon is an Icon Composer document (`Support/AppIcon.icon`, shared
+with Encyclopedia: a glass codex with a laurel wreath on graphite), compiled
+into the bundle by `actool` with the build.
 
 Tests and the gallery benchmark use isolated preferences and recovery storage.
 For automated UI testing, launch a separate instance with
-`open -na /Applications/Write.app --args --test-mode` (or set `WRITE_TEST_MODE=1`
+`open -na /Applications/Catalog.app --args --test-mode` (or set `CATALOG_TEST_MODE=1`
 when launching the executable). Every test launch gets a fresh profile: test
 drafts, tabs, recents, and preferences cannot enter your normal session, even
 if the test crashes. Use temporary copies of files for testing edits; explicitly
@@ -64,10 +69,10 @@ The model menu at the bottom of the sidebar picks who answers:
 - **Claude API** with an Anthropic API key from Settings (⌘,).
 - **Apple Intelligence**, on device; answers questions but can't edit files.
 
-Claude Code and Codex must be installed; Write finds them on your login
+Claude Code and Codex must be installed; Catalog finds them on your login
 shell's PATH (npm, Homebrew, and nvm installs all work). If one isn't signed
 in, the menu offers **Sign In**, which runs `claude auth login` or
-`codex login` in Terminal. Write never handles those credentials. Each
+`codex login` in Terminal. Catalog never handles those credentials. Each
 conversation keeps its CLI session and resumes it on every turn; the title
 menu at the top of the sidebar lists the window's conversations, and
 **New Conversation** starts another. Picking a different model starts a new
@@ -79,7 +84,7 @@ place (⌘Z undoes an edit) and the sidebar refreshes. Notes without unsaved
 edits also reload when the window becomes key.
 
 The first time the assistant works in `~/Documents`, macOS asks whether
-Write may access that folder.
+Catalog may access that folder.
 
 ## Editing
 
@@ -99,11 +104,11 @@ Write may access that folder.
   characters land inside it. Typing a space exits the span.
 - Documents autosave 0.8s after you stop typing (once a file has a path).
 - Crash recovery: every edited buffer — including untitled ones — is mirrored
-  to `~/Library/Application Support/Write/Recovery/` as you type. If the app
+  to `~/Library/Application Support/Catalog/Recovery/` as you type. If the app
   crashes, is force-quit, or you just quit (⌘Q, which never prompts), your
   drafts reappear on the next launch. Closing a tab or window still asks
   before discarding an unsaved untitled buffer.
-- `Write.app/Contents/MacOS/Write a.md b.md` opens each file in a tab.
+- `Catalog.app/Contents/MacOS/Catalog a.md b.md` opens each file in a tab.
 
 ## Folders, media, and file references
 
@@ -130,7 +135,7 @@ the session. **File → Close Folder** removes the sidebar and keeps your tabs.
   In Files mode, image previews have no title or breadcrumb.
 - Galleries decode only visible thumbnails, sized for the display's pixel density.
   Offscreen requests are cancelled and reusable cells release their images. A 64 MB
-  decoded thumbnail cache and a 256 MB disk cache under `~/Library/Caches/com.grant.write/`
+  decoded thumbnail cache and a 256 MB disk cache under `~/Library/Caches/com.grant.catalog/`
   avoid repeated decoding; editing a source invalidates its cached thumbnail.
   Workers deliver decoded `CGImage` pixels directly; loading/error symbols are
   rasterized once on the gallery scan queue. Cells never convert or rasterize
@@ -160,7 +165,7 @@ Markdown link (bold royal blue); `[[` inserts a wiki link.
 
 ## Links between documents
 
-Write uses the two syntaxes you already know — GitHub-flavored Markdown links
+Catalog uses the two syntaxes you already know — GitHub-flavored Markdown links
 and Obsidian wiki links — and nothing else. Both are plain text in the file, so
 the same links keep working in GitHub, Obsidian, and any other Markdown tool.
 
@@ -178,7 +183,7 @@ the same links keep working in GitHub, Obsidian, and any other Markdown tool.
 
 **Click a link to follow it**; Option-click places the editing caret inside it
 instead. Links to Markdown or images open in a tab (or focus the tab already
-showing them); web addresses open in your browser; files Write cannot display
+showing them); web addresses open in your browser; files Catalog cannot display
 are handed to the system. A `#fragment` scrolls to its heading, and matches
 either spelling — `#My Heading` (Obsidian) or `#my-heading` (GitHub).
 
@@ -187,7 +192,7 @@ the link, with special characters percent-encoded — exactly how GitHub renders
 them. The opened folder defines the **search scope**, not the link's origin, so
 opening a higher-level folder needs no migration and moving a whole project
 preserves its links. Agents can parse these links, decode their paths, resolve
-them against the source file's directory, and traverse the graph without Write
+them against the source file's directory, and traverse the graph without Catalog
 or a separate index.
 
 **Wiki-link targets are note names**, resolved against the open folder: a bare

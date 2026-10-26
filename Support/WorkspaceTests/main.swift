@@ -1,6 +1,6 @@
 import AppKit
 
-precondition(AppState.isTesting, "Compile with -D WRITE_TESTING before running workspace tests")
+precondition(AppState.isTesting, "Compile with -D CATALOG_TESTING before running workspace tests")
 setbuf(stdout, nil)
 _ = NSApplication.shared
 var failures = 0
@@ -669,7 +669,7 @@ let scratch = controller.documents.first { $0.url == nil && $0.storage.string ==
 check("test draft persists", RecoveryStore.write(scratch))
 check("test draft can be recovered in its own profile", RecoveryStore.loadAll().contains { $0.id == scratch.recoveryID })
 let realRecovery = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    .appendingPathComponent("Write/Recovery")
+    .appendingPathComponent("Catalog/Recovery")
 check("test recovery directory is isolated", RecoveryStore.directory != realRecovery)
 check("test draft never reaches user recovery", !FileManager.default.fileExists(atPath:
     realRecovery.appendingPathComponent(scratch.recoveryID.uuidString + ".json").path))
