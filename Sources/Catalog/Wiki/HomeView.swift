@@ -203,14 +203,18 @@ struct HomeView: View {
                 Label("Blank Note", systemImage: "square.and.pencil")
             }
             Button { page.homeActions?.openFolder() } label: {
-                Label("Open Folder…", systemImage: "folder")
+                Label("Open Folder", systemImage: "folder")
             }
             Button { page.homeActions?.openFile() } label: {
-                Label("Open File…", systemImage: "doc")
+                Label("Open File", systemImage: "doc")
             }
         }
         .buttonStyle(.glassPill)
-        .font(WikiTheme.interface(size: 14))
+        // The reading font, like the title and search; each pill keeps its
+        // natural width, and the search field spans the row.
+        .font(WikiTheme.body(bodyFamily, size: 16))
+        .lineLimit(1)
+        .fixedSize()
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
     }
