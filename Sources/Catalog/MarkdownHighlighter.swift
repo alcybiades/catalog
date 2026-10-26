@@ -76,7 +76,8 @@ extension NSAttributedString.Key {
     static let mdMarker = NSAttributedString.Key("mdMarker")
     /// Carries an ImageEmbed for image syntax; drawn by the layout manager.
     static let mdImage = NSAttributedString.Key("mdImage")
-    /// Set on lines that leave a fenced code block open, so an incremental
+    /// Set on lines that leave a fenced code block open, carrying its
+    /// `CodeState` (language, open comment or string), so an incremental
     /// pass can resume mid-document and knows when a fence change settles.
     static let mdCodeBlock = NSAttributedString.Key("mdCodeBlock")
 }
@@ -323,6 +324,7 @@ final class MarkdownHighlighter {
         let boldColor = Theme.bold, headingColor = Theme.heading, italicColor = Theme.italic
         let codeAmber = Theme.codeAmber, listMarker = Theme.listMarker
         let quote = Theme.quote, link = Theme.link
+        let syntax = Theme.palette.syntax
         private var hangingIndents: [String: NSParagraphStyle] = [:]
 
         init(family: String, fontSize: CGFloat) {
@@ -433,18 +435,20 @@ final class MarkdownHighlighter {
         let text = textStorage.string as NSString
 
         textStorage.beginEditing()
-        var inCodeBlock = start > 0
-            && textStorage.attribute(.mdCodeBlock, at: start - 1, effectiveRange: nil) != nil
+        var code = start > 0
+            ? CodeState(attributeValue: textStorage.attribute(.mdCodeBlock, at: start - 1, effectiveRange: nil))
+            : nil
         var lineStart = start
         while lineStart < text.length {
             let lineRange = text.lineRange(for: NSRange(location: lineStart, length: 0))
-            let wasInCodeBlock = end != nil
-                && textStorage.attribute(.mdCodeBlock, at: NSMaxRange(lineRange) - 1, effectiveRange: nil) != nil
+            let previous = end == nil ? nil
+                : CodeState(attributeValue: textStorage.attribute(.mdCodeBlock, at: NSMaxRange(lineRange) - 1,
+                                                                  effectiveRange: nil))
             textStorage.setAttributes(style.baseAttributes, range: lineRange)
-            highlightLine(textStorage, text: text, lineRange: lineRange, inCodeBlock: &inCodeBlock, style: style)
-            if inCodeBlock { textStorage.addAttribute(.mdCodeBlock, value: true, range: lineRange) }
+            highlightLine(textStorage, text: text, lineRange: lineRange, code: &code, style: style)
+            if let code { textStorage.addAttribute(.mdCodeBlock, value: code.attributeValue, range: lineRange) }
             lineStart = NSMaxRange(lineRange)
-            if let end, lineStart >= end, inCodeBlock == wasInCodeBlock { break }
+            if let end, lineStart >= end, code == previous { break }
         }
 
         let styled = NSRange(location: start, length: lineStart - start)
@@ -456,7 +460,7 @@ final class MarkdownHighlighter {
     }
 
     private func highlightLine(_ ts: NSTextStorage, text: NSString, lineRange: NSRange,
-                               inCodeBlock: inout Bool, style: Style) {
+                               code: inout CodeState?, style: Style) {
         let line = text.substring(with: lineRange)
         let localRange = NSRange(location: 0, length: (line as NSString).length)
         func global(_ r: NSRange) -> NSRange { NSRange(location: lineRange.location + r.location, length: r.length) }
@@ -464,17 +468,33 @@ final class MarkdownHighlighter {
 
         let monoFont = style.monoFont
         let codeStyle = style.codeParagraph
-        if Self.fence.firstMatch(in: line, range: localRange) != nil {
-            inCodeBlock.toggle()
+        if let fence = Self.fence.firstMatch(in: line, range: localRange) {
+            if code == nil {
+                // An unlabeled block is guessed from its first line, which an
+                // incremental pass reaches only by restyling this one too.
+                let info = (line as NSString).substring(from: NSMaxRange(fence.range))
+                code = CodeState(language: CodeLanguage(info: info) ?? {
+                    guard NSMaxRange(lineRange) < text.length else { return .plain }
+                    let next = text.substring(with: text.lineRange(for: NSRange(location: NSMaxRange(lineRange), length: 0)))
+                    return Self.fence.firstMatch(in: next, range: NSRange(location: 0, length: (next as NSString).length)) == nil
+                        ? CodeLanguage.guess(firstLine: next) : .plain
+                }())
+            } else {
+                code = nil
+            }
             ts.addAttributes([.font: monoFont, .foregroundColor: Theme.dim,
                               .backgroundColor: Theme.codeBlockBackground,
                               .paragraphStyle: codeStyle], range: lineRange)
             return
         }
-        if inCodeBlock {
+        if var state = code {
             ts.addAttributes([.font: monoFont, .foregroundColor: Theme.code,
                               .backgroundColor: Theme.codeBlockBackground,
                               .paragraphStyle: codeStyle], range: lineRange)
+            CodeSyntax.tokenize(line, state: &state) { token, range in
+                ts.addAttribute(.foregroundColor, value: style.syntax[token], range: global(range))
+            }
+            code = state
             return
         }
 

@@ -26,6 +26,27 @@ extension NSColor {
     }
 }
 
+/// Token colors inside fenced code; untokenized code keeps `Palette.code`.
+struct SyntaxColors {
+    var keyword, string, comment, number, type, function: NSColor
+
+    init(keyword: UInt32, string: UInt32, comment: UInt32, number: UInt32, type: UInt32, function: UInt32) {
+        (self.keyword, self.string, self.comment) = (NSColor(hex: keyword), NSColor(hex: string), NSColor(hex: comment))
+        (self.number, self.type, self.function) = (NSColor(hex: number), NSColor(hex: type), NSColor(hex: function))
+    }
+
+    subscript(token: CodeToken) -> NSColor {
+        switch token {
+        case .keyword: return keyword
+        case .string: return string
+        case .comment: return comment
+        case .number: return number
+        case .type: return type
+        case .function: return function
+        }
+    }
+}
+
 /// The app's color themes. Plasma, the original, tints a background blur;
 /// the others are opaque.
 enum ThemeKind: String, CaseIterable {
@@ -70,6 +91,7 @@ struct Palette {
     var sidebarSelection: NSColor
     var codeBackground: NSColor
     var codeBlockBackground: NSColor
+    var syntax: SyntaxColors
     /// The user's turns in the assistant transcript.
     var bubble: NSColor
     var bubbleText: NSColor
@@ -111,6 +133,8 @@ struct Palette {
         sidebarSelection: NSColor(hex: 0x7186A5, alpha: 0.28),
         codeBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
         codeBlockBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
+        syntax: .init(keyword: 0xC39BFF, string: 0xFFB86C, comment: 0x6A7A96,
+                      number: 0xFF8A7A, type: 0x63D0FF, function: 0xA4BEEF),
         bubble: NSColor.black.withAlphaComponent(0.25), bubbleText: NSColor.white.withAlphaComponent(0.92),
         send: .white, sendGlyph: NSColor(hex: 0x141414),
         danger: NSColor(hex: 0xFF8A7A), diagramBase: NSColor(hex: 0x1C1D22),
@@ -130,6 +154,8 @@ struct Palette {
         sidebarSelection: NSColor.white.withAlphaComponent(0.09),
         codeBackground: NSColor.white.withAlphaComponent(0.09),
         codeBlockBackground: NSColor(hex: 0x171717),
+        syntax: .init(keyword: 0x8FB3E8, string: 0xD9A77F, comment: 0x7A7A7A,
+                      number: 0xC4A5DE, type: 0x86C8B8, function: 0xE3D7A3),
         bubble: NSColor.white.withAlphaComponent(0.08), bubbleText: NSColor(hex: 0xECECEC),
         send: NSColor(hex: 0x3D7FE0), sendGlyph: .white,
         danger: NSColor(hex: 0xF28B82), diagramBase: NSColor(hex: 0x262626),
@@ -149,6 +175,8 @@ struct Palette {
         sidebarSelection: NSColor.black.withAlphaComponent(0.06),
         codeBackground: NSColor.black.withAlphaComponent(0.06),
         codeBlockBackground: NSColor(hex: 0xF5F5F5),
+        syntax: .init(keyword: 0xCF222E, string: 0x0A3069, comment: 0x6E7781,
+                      number: 0x0550AE, type: 0x953800, function: 0x8250DF),
         bubble: NSColor.black.withAlphaComponent(0.05), bubbleText: NSColor(hex: 0x0D0D0D),
         send: NSColor(hex: 0x1F62D0), sendGlyph: .white,
         danger: NSColor(hex: 0xC5221F), diagramBase: NSColor(hex: 0xFFFFFF),
@@ -168,6 +196,8 @@ struct Palette {
         sidebarSelection: NSColor(hex: 0x8A6A3A, alpha: 0.14),
         codeBackground: NSColor(hex: 0x8A6A3A, alpha: 0.10),
         codeBlockBackground: NSColor(hex: 0xEFE5D0),
+        syntax: .init(keyword: 0x9A3B2E, string: 0x2F6F8F, comment: 0x9C8C70,
+                      number: 0xB07D2B, type: 0x7F6A8A, function: 0x3F4A1C),
         bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x1A1A1A),
         send: NSColor(hex: 0x1A1A1A), sendGlyph: NSColor(hex: 0xF6EFDF),
         danger: NSColor(hex: 0xB23A2E), diagramBase: NSColor(hex: 0xF6EFDF),
