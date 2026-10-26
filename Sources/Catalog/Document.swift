@@ -9,6 +9,8 @@ final class Document {
     let storage: NSTextStorage
     let undoManager = UndoManager()
     var selection = NSRange(location: 0, length: 0)
+    /// Where the note was scrolled as it left for another window.
+    var scrollOrigin: NSPoint?
     var edited = false
     /// Title chosen before the document has a file (used as the save name).
     var customTitle: String?

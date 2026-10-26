@@ -14,7 +14,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     private(set) var textView: EditorTextView!
     private var scrollView: NSScrollView!
-    private var tabBar: TabBarView!
+    private(set) var tabBar: TabBarView!
     private var statusLabel: NSTextField!
     private var statusPill: NSView!
     private let sidebarBackdrop = SidebarBackdrop()
@@ -159,10 +159,20 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         tabBar.onSelect = { [weak self] index in self?.switchTab(to: index) }
         tabBar.onClose = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onNewTab = { [weak self] anchor in self?.showNewTabMenu(from: anchor) }
-        tabBar.onDetach = { [weak self] index, screenPoint in
-            guard let self else { return }
-            app?.detachTab(from: self, index: index, to: screenPoint)
+        tabBar.onMove = { [weak self] from, to in self?.moveDocument(from: from, to: to) }
+        tabBar.dropTarget = { [weak self] screenPoint in
+            guard let self else { return nil }
+            return self.app?.tabBar(at: screenPoint, excluding: self)
         }
+        tabBar.onTransfer = { [weak self] index, bar, destination in
+            guard let self, let target = self.app?.controllers.first(where: { $0.tabBar === bar }) else { return }
+            self.app?.moveTab(from: self, at: index, to: target, targetIndex: destination)
+        }
+        tabBar.onDetach = { [weak self] index, cursor, grab in
+            guard let self else { return }
+            self.app?.moveTab(from: self, at: index, cursor: cursor, grab: grab)
+        }
+        tabBar.dragPreview = { [weak self] in self?.pagePreview() }
 
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = Theme.interfaceFont(size: 11)
@@ -404,7 +414,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func windowWillClose(_ notification: Notification) {
-        agent.stopAll()
+        agent.store.detach(agent)
         outlineTimer?.invalidate()
         documents.forEach(retire)
         preview.suspend()
@@ -493,6 +503,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         current = index
         recordTabActivation()
         let doc = currentDocument
+        // The old selection may lie beyond the incoming text.
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
         textView.layoutManager?.replaceTextStorage(doc.storage)
         textView.rehighlight()
         let length = (doc.storage.string as NSString).length
@@ -557,27 +569,90 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         reattachCurrent()
     }
 
-    /// Removes a tab intact (storage, undo, selection) for detaching into
-    /// another window. Returns nil when this is the only tab.
+    /// Removes a tab intact (storage, undo stack, selection, scroll, page)
+    /// for moving into another window. Returns nil when this is the only tab.
+    /// Its edits are flushed first, so the move itself never prompts.
     func removeDocument(at index: Int) -> Document? {
         guard documents.count > 1, documents.indices.contains(index) else { return nil }
         commitTitleIfEditing()
         flushAutosave()
-        let doc = documents.remove(at: index)
+        let doc = documents[index]
+        if index == current {
+            doc.selection = textView.selectedRange()
+            doc.scrollOrigin = scrollView.contentView.bounds.origin
+            // Typing coalesces into one open undo group; close it here.
+            textView.breakUndoCoalescing()
+        }
+        documents.remove(at: index)
         if current > index {
             current -= 1
         } else if current >= documents.count {
             current = documents.count - 1
         }
+        // A Wikipedia page's view stays put (hidden) until the new window
+        // adopts it, keeping its scroll position and loaded images.
+        doc.wiki?.hostView?.isHidden = true
         reattachCurrent()
         return doc
     }
 
+    /// Adopts a tab moved from another window at `index` and shows it.
+    func insertDocument(_ doc: Document, at index: Int) {
+        commitTitleIfEditing()
+        let showing = currentDocument
+        documents.insert(doc, at: max(0, min(index, documents.count)))
+        current = documents.firstIndex { $0 === showing } ?? 0
+        switchTab(to: documents.firstIndex { $0 === doc } ?? current)
+        restoreScroll(of: doc)
+    }
+
+    /// Reorders a tab within this window; the shown tab stays shown.
+    func moveDocument(from source: Int, to destination: Int) {
+        guard documents.indices.contains(source), documents.indices.contains(destination), source != destination else { return }
+        let showing = currentDocument
+        documents.insert(documents.remove(at: source), at: destination)
+        current = documents.firstIndex { $0 === showing } ?? 0
+        recordTabActivation()
+        refreshChrome()
+    }
+
+    /// Puts a note that arrived from another window back where it was.
+    func restoreScroll(of doc: Document) {
+        guard let origin = doc.scrollOrigin else { return }
+        doc.scrollOrigin = nil
+        guard doc === currentDocument, doc.kind == .markdown else { return }
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        let clip = scrollView.contentView
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// The page area as composited on screen (glass included), for the
+    /// window-like preview that follows a tab dragged out of the strip.
+    private func pagePreview() -> NSImage? {
+        guard let window, let image = AppDelegate.windowImage(window) else { return nil }
+        let scale = CGFloat(image.width) / window.frame.width
+        let page = container.convert(contentGuide.frame, to: nil)
+        let crop = CGRect(x: page.minX * scale, y: (window.frame.height - page.maxY) * scale,
+                          width: page.width * scale, height: page.height * scale)
+        guard let cropped = image.cropping(to: crop) else { return nil }
+        return NSImage(cgImage: cropped, size: page.size)
+    }
+
+    @objc func moveTabToNewWindow(_ sender: Any?) {
+        app?.moveTab(from: self, at: current)
+    }
+
     private func reattachCurrent() {
         recordTabActivation()
-        textView.layoutManager?.replaceTextStorage(currentDocument.storage)
-        textView.rehighlight()
+        let doc = currentDocument
+        // The old selection may lie beyond the incoming text.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.layoutManager?.replaceTextStorage(doc.storage)
+        textView.rehighlight()
+        let length = doc.storage.length
+        let selection = NSIntersectionRange(doc.selection, NSRange(location: 0, length: length))
+        textView.setSelectedRange(selection.location <= length ? selection : NSRange(location: 0, length: 0))
         refreshChrome()
         focusCurrentPage()
     }
@@ -815,6 +890,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        agent.store.frontmost = agent
         sidebar.refresh()
         // Pick up edits made elsewhere (another app, an agent in a terminal)
         // to notes that have no unsaved changes here.
@@ -1664,6 +1740,8 @@ extension EditorWindowController: NSMenuItemValidation {
             return true
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
             return currentDocument.kind == .markdown
+        case #selector(moveTabToNewWindow(_:)):
+            return documents.count > 1
         default:
             return true
         }

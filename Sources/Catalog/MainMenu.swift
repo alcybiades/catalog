@@ -112,6 +112,7 @@ extension AppDelegate {
         let prevTabCtrl = windowMenu.addItem(withTitle: "Previous Tab (Control)", action: #selector(EditorWindowController.previousTab(_:)), keyEquivalent: "\t")
         prevTabCtrl.keyEquivalentModifierMask = [.control, .shift]
         prevTabCtrl.isHidden = true
+        windowMenu.addItem(withTitle: "Move Tab to New Window", action: #selector(EditorWindowController.moveTabToNewWindow(_:)), keyEquivalent: "")
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu

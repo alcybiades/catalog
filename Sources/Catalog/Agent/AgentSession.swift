@@ -2,15 +2,124 @@ import Foundation
 import AppKit
 import CryptoKit
 
-/// One window's assistant: its conversations (each pinned to the model it
-/// started with) and the tab context every message carries, so the
-/// assistant follows the user across tabs.
+/// The app's one assistant: its conversations (each pinned to the model it
+/// started with) and the model picker, shared by every window so a message
+/// sent in one appears, streaming, in all of them. Each window attaches an
+/// `AgentSession` for what stays its own: the open tab, the draft, and
+/// where tools act.
 @MainActor @Observable
-final class AgentSession {
+final class AgentStore {
+    static let shared = AgentStore()
+
     private(set) var conversations: [AgentConversation] = []
     private(set) var current: AgentConversation
     /// The model new conversations use; the picker at the bottom.
     private(set) var backend: AgentBackend
+    @ObservationIgnored private var sessions: [WeakSession] = []
+    /// The window last made key: where tools act once the sending window
+    /// has closed.
+    @ObservationIgnored weak var frontmost: AgentSession?
+
+    private struct WeakSession { weak var session: AgentSession? }
+
+    init() {
+        let backend = AgentBackend.preferred
+        self.backend = backend
+        current = AgentConversation(backend: backend)
+        conversations = [current]
+        current.store = self
+        // Until the user picks a model, follow what's available once the
+        // CLIs have been checked (that finishes after launch).
+        NotificationCenter.default.addObserver(forName: AgentAccounts.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !AgentBackend.hasChoice else { return }
+                let best = AgentBackend.preferred
+                guard best != self.backend else { return }
+                self.backend = best
+                for conversation in self.conversations where conversation.items.isEmpty { conversation.backend = best }
+            }
+        }
+    }
+
+    var attached: [AgentSession] { sessions.compactMap(\.session) }
+
+    func attach(_ session: AgentSession) {
+        sessions.removeAll { $0.session == nil || $0.session === session }
+        sessions.append(WeakSession(session: session))
+    }
+
+    /// A closing window stops being a tool target; replies it started keep
+    /// streaming to the other windows.
+    func detach(_ session: AgentSession) {
+        sessions.removeAll { $0.session == nil || $0.session === session }
+        for conversation in conversations where conversation.origin === session { conversation.origin = nil }
+        if frontmost === session { frontmost = nil }
+    }
+
+    /// Sends from `session`'s window. Every window first saves its notes,
+    /// since a CLI may read any open file. Sends are serialized on the main
+    /// actor: once one starts, the conversation is responding and a second
+    /// window's send is refused.
+    func send(_ question: String, from session: AgentSession) {
+        guard !current.isResponding else { return }
+        attached.forEach { $0.prepareToSend?() }
+        guard let context = session.contextProvider?() else { return }
+        current.origin = session
+        current.send(question, context: context)
+    }
+
+    func stop() { current.stop() }
+    func stopAll() { conversations.forEach { $0.stop() } }
+
+    /// Starts a fresh conversation with the selected model (reusing an empty one).
+    func newConversation() {
+        if current.items.isEmpty && current.backend == backend { return }
+        if let empty = conversations.first(where: { $0.items.isEmpty }) {
+            empty.backend = backend
+            current = empty
+        } else {
+            let conversation = AgentConversation(backend: backend)
+            conversation.store = self
+            conversations.insert(conversation, at: 0)
+            current = conversation
+        }
+    }
+
+    func select(_ conversation: AgentConversation) {
+        current = conversation
+        backend = conversation.backend
+    }
+
+    /// Picking a model applies to the current conversation while it is
+    /// empty; otherwise it starts a new one (a CLI session can't switch).
+    func choose(_ backend: AgentBackend) {
+        self.backend = backend
+        AgentBackend.preferred = backend
+        if current.items.isEmpty {
+            current.backend = backend
+        } else if current.backend != backend {
+            newConversation()
+        }
+    }
+
+    func close(_ conversation: AgentConversation) {
+        conversation.stop()
+        conversations.removeAll { $0 === conversation }
+        if conversations.isEmpty {
+            let fresh = AgentConversation(backend: backend)
+            fresh.store = self
+            conversations = [fresh]
+        }
+        if current === conversation { current = conversations[0] }
+    }
+}
+
+/// One window's side of the shared assistant: the tab context every
+/// message carries (so the assistant follows the user across tabs), the
+/// unsent draft, focus, and the window's handlers for opening things.
+@MainActor @Observable
+final class AgentSession {
+    let store: AgentStore
     /// The open tab, shown in the panel header.
     var contextLabel = ""
     var contextKind: AgentContext.Kind = .home
@@ -33,84 +142,25 @@ final class AgentSession {
             ?? FileManager.default.homeDirectoryForCurrentUser
     }
 
-    init() {
-        let backend = AgentBackend.preferred
-        self.backend = backend
-        current = AgentConversation(backend: backend)
-        conversations = [current]
-        current.owner = self
-        // Until the user picks a model, follow what's available once the
-        // CLIs have been checked (that finishes after launch).
-        NotificationCenter.default.addObserver(forName: AgentAccounts.didChange, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, !AgentBackend.hasChoice else { return }
-                let best = AgentBackend.preferred
-                guard best != self.backend else { return }
-                self.backend = best
-                for conversation in self.conversations where conversation.items.isEmpty { conversation.backend = best }
-            }
-        }
+    init(store: AgentStore? = nil) {
+        self.store = store ?? .shared
+        self.store.attach(self)
     }
 
+    var conversations: [AgentConversation] { store.conversations }
+    var current: AgentConversation { store.current }
+    var backend: AgentBackend { store.backend }
     var items: [AgentConversation.Item] { current.items }
     var isResponding: Bool { current.isResponding }
 
     func requestFocus() { focusRequest += 1 }
 
-    func send(_ question: String) {
-        guard !current.isResponding else { return }
-        prepareToSend?()
-        guard let context = contextProvider?() else { return }
-        current.send(question, context: context)
-    }
-
-    func stop() { current.stop() }
-    func stopAll() { conversations.forEach { $0.stop() } }
-
-    /// Starts a fresh conversation with the selected model (reusing an empty one).
-    func newConversation() {
-        if current.items.isEmpty && current.backend == backend { return }
-        if let empty = conversations.first(where: { $0.items.isEmpty }) {
-            empty.backend = backend
-            current = empty
-        } else {
-            let conversation = AgentConversation(backend: backend)
-            conversation.owner = self
-            conversations.insert(conversation, at: 0)
-            current = conversation
-        }
-        requestFocus()
-    }
-
-    func select(_ conversation: AgentConversation) {
-        current = conversation
-        backend = conversation.backend
-        requestFocus()
-    }
-
-    /// Picking a model applies to the current conversation while it is
-    /// empty; otherwise it starts a new one (a CLI session can't switch).
-    func choose(_ backend: AgentBackend) {
-        self.backend = backend
-        AgentBackend.preferred = backend
-        if current.items.isEmpty {
-            current.backend = backend
-            requestFocus()
-        } else if current.backend != backend {
-            newConversation()
-        }
-    }
-
-    func close(_ conversation: AgentConversation) {
-        conversation.stop()
-        conversations.removeAll { $0 === conversation }
-        if conversations.isEmpty {
-            let fresh = AgentConversation(backend: backend)
-            fresh.owner = self
-            conversations = [fresh]
-        }
-        if current === conversation { current = conversations[0] }
-    }
+    func send(_ question: String) { store.send(question, from: self) }
+    func stop() { store.stop() }
+    func newConversation() { store.newConversation(); requestFocus() }
+    func select(_ conversation: AgentConversation) { store.select(conversation); requestFocus() }
+    func choose(_ backend: AgentBackend) { store.choose(backend); requestFocus() }
+    func close(_ conversation: AgentConversation) { store.close(conversation) }
 }
 
 /// One conversation with one model. Claude Code and Codex keep their own
@@ -134,7 +184,10 @@ final class AgentConversation: Identifiable {
     var backend: AgentBackend
     private(set) var items: [Item] = []
     private(set) var isResponding = false
-    @ObservationIgnored weak var owner: AgentSession?
+    @ObservationIgnored weak var store: AgentStore?
+    /// The window the latest message came from: its tab is the one the
+    /// context described, and its tools open files there.
+    @ObservationIgnored weak var origin: AgentSession?
 
     init(backend: AgentBackend) {
         self.backend = backend
@@ -248,7 +301,8 @@ final class AgentConversation: Identifiable {
         history.append(["role": "user", "content": content])
 
         let tools = AgentTools(root: context.workingDirectory, openFile: context.fileURL) { [weak self] url in
-            self?.owner?.openFile?(url)
+            guard let self else { return }
+            (self.origin ?? self.store?.frontmost)?.openFile?(url)
         }
         for _ in 0..<40 {
             var textItems: [Int: UUID] = [:]
