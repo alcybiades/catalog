@@ -180,7 +180,7 @@ struct ChatDock: View {
                     Color.clear
                         .glassEffect(.regular.interactive(), in: shape)
                         .opacity(open ? 0 : 1)
-                    PanelGlass(tint: Self.panelTint)
+                    PanelGlass(tint: Self.panelTint, cornerRadius: Self.size / 2)
                         .opacity(open ? 1 : 0)
                 }
                 .frame(width: glass.width, height: glass.height)
@@ -216,15 +216,17 @@ struct ChatDock: View {
 
     /// The window's own tint keeps the chat legible over the page; opaque
     /// themes tint more, so the glass reads as their paper.
-    private static var panelTint: NSColor {
+    static var panelTint: NSColor {
         let palette = Theme.palette
         return palette.background.withAlphaComponent(palette.backgroundOpacity < 1 ? 0.35 : 0.6)
     }
 }
 
-/// The open panel's glass, rounded like the closed button.
-private struct PanelGlass: NSViewRepresentable {
+/// AppKit Liquid Glass for large SwiftUI panels (the open assistant, the
+/// home search's suggestions), which SwiftUI's glass doesn't blur beneath.
+struct PanelGlass: NSViewRepresentable {
     let tint: NSColor
+    let cornerRadius: CGFloat
 
     /// Leaves clicks to the SwiftUI panel drawn over it.
     final class Glass: NSGlassEffectView {
@@ -232,12 +234,13 @@ private struct PanelGlass: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> Glass {
-        let glass = Glass()
-        glass.cornerRadius = ChatDock.size / 2
-        return glass
+        Glass()
     }
 
-    func updateNSView(_ glass: Glass, context: Context) { glass.tintColor = tint }
+    func updateNSView(_ glass: Glass, context: Context) {
+        glass.tintColor = tint
+        glass.cornerRadius = cornerRadius
+    }
 }
 
 /// Where a floating panel dragged to the window's right edge will dock.
