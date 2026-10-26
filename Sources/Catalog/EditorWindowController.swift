@@ -611,7 +611,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         switchTab(to: (current - 1 + documents.count) % documents.count)
     }
 
-    private func refreshChrome(typing: Bool = false) {
+    private func refreshChrome() {
         let doc = currentDocument
         let editable = doc.kind == .markdown
         let isWiki = doc.kind == .wiki
@@ -630,28 +630,37 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Notes and images get the same glass cluster as Wikipedia pages.
         if chrome.page !== doc.wiki { chrome.page = doc.wiki }
         updatePageGlass()
-        if typing {
-            outlineTimer?.invalidate()
-            outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-                self?.updatePageActions()
-            }
-        } else {
-            updatePageActions()
-        }
-        tabBar.update(tabs: documents.map { ($0.name, $0.edited) }, selected: current)
+        updatePageActions()
+        updateTabs()
         updateStatus()
         updateAgentContext()
         app?.sessionChanged()
     }
 
+    private func updateTabs() {
+        tabBar.update(tabs: documents.map { ($0.name, $0.edited) }, selected: current)
+    }
+
     // MARK: - Text changes → autosave + status
 
+    /// Runs per keystroke, so it stays lean: the text changes nothing in the
+    /// session, agent context or window layout. Only the first edit marks the
+    /// tab; text-derived chrome (outline, share, word count) waits for a pause.
     func textDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextView) === textView else { return }
         guard !reloadingFromDisk else { return }
-        currentDocument.edited = true
-        window?.isDocumentEdited = true
-        refreshChrome(typing: true)
+        if !currentDocument.edited {
+            currentDocument.edited = true
+            window?.isDocumentEdited = true
+            updateTabs()
+        }
+        outlineTimer?.invalidate()
+        outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            updatePageActions()
+            // A "saved" flash restores the count itself when it ends.
+            if savedFlashTimer?.isValid != true { updateStatus() }
+        }
         scheduleAutosave()
     }
 
@@ -694,17 +703,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         autosaveNow()
     }
 
+    /// Assigns only changed strings; each assignment invalidates layout.
     private func updateStatus() {
-        let words = currentDocument.storage.string
+        let doc = currentDocument
+        let words = doc.storage.string
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
-        statusLabel.stringValue = "\(currentDocument.name) · \(words)w"
-        guard currentDocument.kind != .wiki else {
-            window?.title = currentDocument.name
-            return
-        }
-        window?.title = currentDocument.name
-        if window?.firstResponder !== titleView {
-            titleView.string = currentDocument.displayTitle
+        let status = "\(doc.name) · \(words)w"
+        if statusLabel.stringValue != status { statusLabel.stringValue = status }
+        if window?.title != doc.name { window?.title = doc.name }
+        guard doc.kind != .wiki else { return }
+        if window?.firstResponder !== titleView, titleView.string != doc.displayTitle {
+            titleView.string = doc.displayTitle
         }
     }
 
@@ -1094,6 +1103,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if panel.runModal() == .OK, let url = panel.url {
             currentDocument.url = url
             app?.addRecentFile(url)
+            refreshChrome()
         }
     }
 
@@ -1106,7 +1116,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             doc.edited = false
             RecoveryStore.remove(doc)
             window?.isDocumentEdited = false
-            refreshChrome()
+            // Saving clears only the edited mark; a new URL refreshed already.
+            updateTabs()
             return true
         } catch {
             NSSound.beep()
@@ -1558,6 +1569,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             RecoveryStore.remove(doc)
         }
         window?.isDocumentEdited = currentDocument.edited
+        updateTabs()
     }
 
     /// The assistant changed files: follow moves, reload open notes, and
