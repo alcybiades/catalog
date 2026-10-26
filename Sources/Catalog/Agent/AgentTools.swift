@@ -13,7 +13,7 @@ extension Notification.Name {
 
 /// What the assistant can see of the window when a message is sent.
 struct AgentContext {
-    enum Kind { case article, note, image, folder, home, other }
+    enum Kind { case article, note, image, home, other }
 
     var kind: Kind
     var title: String
@@ -27,7 +27,7 @@ struct AgentContext {
     var label: String {
         switch kind {
         case .article: return title
-        case .note, .image, .folder: return fileURL?.lastPathComponent ?? title
+        case .note, .image: return fileURL?.lastPathComponent ?? title
         case .home, .other: return title
         }
     }

@@ -1,5 +1,5 @@
 import AppKit
-precondition(AppState.isTesting, "Compile with -D CATALOG_TESTING before running the gallery benchmark")
+precondition(AppState.isTesting, "Compile with -D CATALOG_TESTING before running the browser benchmark")
 _ = NSApplication.shared
 NSApp.setActivationPolicy(.regular)
 guard CommandLine.arguments.count == 2, !CommandLine.arguments[1].isEmpty else {
@@ -11,20 +11,17 @@ let controller = EditorWindowController(app: nil)
 controller.window!.setFrame(NSRect(x: 100, y: 100, width: 1400, height: 920), display: true)
 controller.showWindow(nil)
 NSApp.activate(ignoringOtherApps: true)
-controller.open(url: root)
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-let preview = controller.window!.contentView!.subviews.first { $0 is FilePreview } as! FilePreview
-let scroll = preview.subviews.first { $0 is NSScrollView } as! NSScrollView
-let collection = scroll.documentView as! NSCollectionView
-// Read-only gallery traversal in a real AppKit event loop; no document edits.
-let deadline = Date().addingTimeInterval(10)
-while preview.sections.isEmpty && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
-guard !preview.sections.isEmpty else {
-    print("No gallery images found, or scanning did not finish in 10 seconds.")
+controller.browse(root)
+let browser = controller.window!.contentView!.subviews.first { $0 is FileBrowser } as! FileBrowser
+let collection = browser.grid
+let scroll = collection.enclosingScrollView!
+// Read-only icon-browser traversal in a real AppKit event loop; no document edits.
+guard !browser.entries.isEmpty else {
+    print("This folder is empty or unreadable.")
     exit(1)
 }
 RunLoop.current.run(until: Date().addingTimeInterval(1))
-print("sections \(preview.sections.count), images \(preview.sections.reduce(0) { $0 + $1.images.count }), height \(collection.bounds.height)")
+print("entries \(browser.entries.count), height \(collection.bounds.height)")
 fflush(stdout)
 var intervals: [Double] = []
 var work: [Double] = []

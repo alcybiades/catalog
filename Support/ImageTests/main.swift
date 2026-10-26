@@ -37,15 +37,6 @@ func writeFixture(_ url: URL, red: CGFloat, orientation: Int = 1) {
 writeFixture(original, red: 0.8)
 let originalBytes = try Data(contentsOf: original)
 let loader = ImageLoader(cacheDirectory: cache, memoryLimit: 1024 * 1024, diskLimit: 1024 * 1024)
-var symbolsReady = false
-DispatchQueue.global(qos: .userInitiated).async {
-    let symbols = GallerySymbols.shared
-    DispatchQueue.main.async {
-        check("loading and error symbols are rasterized off main", symbols.loading != nil && symbols.failed != nil)
-        symbolsReady = true
-    }
-}
-waitFor("background symbols", { symbolsReady })
 check("retina thumbnail size is display-sized", ImageLoader.thumbnailPixels(points: 160, scale: 2) == 384)
 var thumbnail: CGImage?
 var loaded = false

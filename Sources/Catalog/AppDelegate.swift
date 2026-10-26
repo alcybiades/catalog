@@ -75,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return args[index + 1]
         }
         if let title = value(after: "--wiki") { keyController?.openArticle(title) }
+        // `--browse /folder` opens the icon browser there.
+        if let path = value(after: "--browse") { keyController?.browse(URL(fileURLWithPath: path)) }
         // `--move-tab` runs Move Tab to New Window on the current tab.
         if args.contains("--move-tab"), let source = keyController { moveTab(from: source, at: source.current) }
         if args.contains("--assistant") || value(after: "--ask") != nil { controllers.forEach { $0.setAgentOpen(true) } }
@@ -126,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme", "--browse"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).
@@ -217,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let workspace = source.workspace, let path = doc.url?.standardizedFileURL.pathComponents,
            path.starts(with: workspace.root.standardizedFileURL.pathComponents) {
             controller.restoreWorkspace(root: workspace.root, collapsed: source.sidebarCollapsed,
-                                        width: source.sidebarWidth, media: source.mediaMode)
+                                        width: source.sidebarWidth)
         }
         if let cursor, let window = controller.window {
             window.contentView?.layoutSubtreeIfNeeded()
@@ -366,7 +368,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 "workspace": controller.workspace?.root.path ?? "",
                 "sidebarCollapsed": controller.sidebarCollapsed,
                 "sidebarWidth": Double(controller.sidebarWidth),
-                "mediaMode": controller.mediaMode,
             ]
         }
         AppState.defaults.set(entries, forKey: "sessionWindows")
@@ -391,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let root = (entry["workspace"] as? String).flatMap { $0.isEmpty || !FileManager.default.fileExists(atPath: $0) ? nil : $0 }
             controller.restoreWorkspace(root: root.map { URL(fileURLWithPath: $0) },
                                         collapsed: entry["sidebarCollapsed"] as? Bool ?? (root == nil),
-                                        width: CGFloat(entry["sidebarWidth"] as? Double ?? 220), media: entry["mediaMode"] as? Bool ?? false)
+                                        width: CGFloat(entry["sidebarWidth"] as? Double ?? 220))
             if let currentTab = entry["currentTab"] as? [String: String], let title = currentTab["wiki"],
                let index = controller.documents.firstIndex(where: { doc in
                    guard let page = doc.wiki else { return false }

@@ -21,6 +21,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let sidebar = FolderSidebar()
     private let divider = SidebarDivider()
     private let preview = FilePreview()
+    private let browser = FileBrowser()
+    /// The icon browser covers the window; the pages beneath fade out.
+    private(set) var browsing = false
+    private var browseGeneration = 0
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarAnimationID: UUID?
     /// The folder the user opened. Without one, the sidebar browses
@@ -28,7 +32,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private(set) var workspace: Workspace?
     private(set) var sidebarCollapsed = true
     private(set) var sidebarWidth: CGFloat = 220
-    private(set) var mediaMode = false
     private var previewOrigin: NSRect?
     // The inline title is an always-editable NSTextView: one view for both
     // reading and editing means the glyphs cannot shift when editing starts
@@ -206,27 +209,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             guard let self else { return }
             self.sidebarCollapsed.toggle(); self.updateSidebar(animated: true); self.app?.sessionChanged()
         }
-        sidebar.onMediaMode = { [weak self] media in
-            guard let self else { return }
-            self.mediaMode = media; self.sidebar.mediaMode = media; self.updateSidebar(); self.refreshChrome()
-        }
-        sidebar.onRefresh = { [weak self] in
-            guard let self else { return }
-            self.workspace?.refreshIndex()
-            if self.currentDocument.kind == .folder { self.refreshChrome() }
-        }
-        sidebar.onOpen = { [weak self] url, _ in self?.openInCurrentTab(url) }
+        sidebar.onBrowse = { [weak self] in self?.setBrowsing(true) }
+        sidebar.onRefresh = { [weak self] in self?.workspace?.refreshIndex() }
+        sidebar.onOpen = { [weak self] url in self?.openInCurrentTab(url) }
         divider.onResize = { [weak self] width in
             guard let self else { return }
             self.sidebarCollapsed = width < 90
             if !self.sidebarCollapsed { self.sidebarWidth = max(150, min(width, (self.window?.frame.width ?? 640) - 240)) }
             self.updateSidebar(); self.app?.sessionChanged()
         }
-        preview.onNavigate = { [weak self] url in self?.openFolderTab(url) }
-        preview.onOpen = { [weak self] url, origin in
-            self?.previewOrigin = origin
-            self?.open(url: url, forceNewTab: true)
-            self?.previewOrigin = nil
+        browser.onToggle = { [weak self] in
+            guard let self else { return }
+            self.setBrowsing(!self.browsing)
+        }
+        browser.onOpen = { [weak self] url, origin in
+            guard let self else { return }
+            self.setBrowsing(false)
+            self.previewOrigin = origin
+            self.openInCurrentTab(url)
+            self.previewOrigin = nil
         }
         textView.referenceCandidates = { [weak self] query in
             guard let workspace = self?.workspace else { return [] }
@@ -250,7 +251,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.wikiLinkResolver = { [weak self] target in self?.resolveWikiLink(target) }
         pageActions = PageHostingView(rootView: PageActionsView(chrome: chrome))
         pageActions.sizingOptions = [.intrinsicContentSize]
-        backButton = PageHostingView(rootView: WikiBackButton(chrome: chrome))
+        backButton = PageHostingView(rootView: WikiBackButton { [chrome] in chrome.page?.goBack() })
         backButton.sizingOptions = [.intrinsicContentSize]
         chatHost = PageHostingView(rootView: ChatDock(chrome: chrome, session: agent, actions: agentActions(docked: false)))
         chatHost.sizingOptions = []
@@ -284,6 +285,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         container.addSubview(backButton)
         container.addSubview(tabBar)
         container.addSubview(statusPill)
+        browser.translatesAutoresizingMaskIntoConstraints = false
+        browser.isHidden = true
+        container.addSubview(browser)
         container.addSubview(agentContainer)
         container.addSubview(agentDivider)
         container.addSubview(dockHint)
@@ -331,6 +335,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             pageActions.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor),
             backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            browser.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            browser.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
+            browser.topAnchor.constraint(equalTo: container.topAnchor),
+            browser.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             tabBar.topAnchor.constraint(equalTo: container.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
@@ -393,6 +401,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
         sidebar.setRoot(AgentSession.defaultDirectory)
         sidebar.isWatched = false
+        browser.setRoot(AgentSession.defaultDirectory)
+        browser.isWatched = false
         applyTheme()
         updateSidebar()
         updateAgentPanel()
@@ -513,6 +523,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func switchTab(to index: Int) {
         guard documents.indices.contains(index) else { return }
+        if browsing { setBrowsing(false) }
         textView.dismissReferences()
         commitTitleIfEditing()
         flushAutosave()
@@ -538,6 +549,42 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         case .wiki: window?.makeFirstResponder(currentDocument.wiki?.hostView)
         default: window?.makeFirstResponder(preview)
         }
+    }
+
+    /// Expands the icon browser from the sidebar across the window, or
+    /// returns it to the sidebar.
+    func setBrowsing(_ on: Bool, animated: Bool = true) {
+        guard on != browsing else { return }
+        browsing = on
+        browseGeneration += 1
+        let generation = browseGeneration
+        let animate = animated && window?.isVisible == true
+        // Everything beneath the browser except the assistant fades with it.
+        let pages = container.subviews.filter {
+            ![sidebarBackdrop, browser, divider, agentContainer, agentDivider, dockHint, chatHost].contains($0)
+        }
+        if on {
+            browser.isHidden = false
+            // The browser's own fill and edge stand in for the backdrop's.
+            sidebarBackdrop.isHidden = true
+        }
+        browser.setExpanded(on, from: sidebarCollapsed ? 0 : sidebar.frame.width, animated: animate) { [weak self] in
+            guard let self, self.browseGeneration == generation, !on else { return }
+            self.browser.isHidden = true
+            self.sidebarBackdrop.isHidden = self.sidebarCollapsed
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animate ? FileBrowser.duration : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            pages.forEach { $0.animator().alphaValue = on ? 0 : 1 }
+        }
+        if on { window?.makeFirstResponder(browser.grid) } else { focusCurrentPage() }
+    }
+
+    /// Shows `url` in the icon browser, with Back leading up to the sidebar's folder.
+    func browse(_ url: URL) {
+        browser.show(url, within: sidebar.rootURL)
+        setBrowsing(true)
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -715,7 +762,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if !editable {
             selectionToolbar.hide()
             if isWiki { preview.suspend() } else {
-                preview.show(doc, root: workspace?.root, mediaMode: mediaMode, from: previewOrigin)
+                preview.show(doc, from: previewOrigin)
             }
         } else { preview.suspend() }
         // Notes and images get the same glass cluster as Wikipedia pages.
@@ -900,6 +947,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             content.layoutSubtreeIfNeeded()
         }
         sidebarBackdrop.configure(expanded: expanded, width: width, height: content.bounds.height, animated: animate)
+        // The browser's own fill covers the sidebar while it is open.
+        if browsing { sidebarBackdrop.isHidden = true }
         guard animate else { sidebarAnimationID = nil; return }
         if expanded { sidebar.fadeInContents() }
         tabBar.fadeInTabs()
@@ -912,7 +961,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     /// Restores the sidebar: browsing `root`, or ~/Documents without one.
-    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat, media: Bool) {
+    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat) {
         textView.dismissReferences()
         textView.referencesEnabled = root != nil
         workspace = root.map(Workspace.init(root:))
@@ -920,8 +969,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         workspace?.onIndexChanged = { [weak self] in self?.textView.rehighlight() }
         sidebar.isWatched = root != nil
         sidebar.setRoot(root ?? AgentSession.defaultDirectory)
-        sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600)); mediaMode = media
-        sidebar.mediaMode = media
+        browser.isWatched = root != nil
+        browser.setRoot(root ?? AgentSession.defaultDirectory)
+        sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600))
         updateSidebar()
         refreshChrome()
     }
@@ -929,6 +979,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     func windowDidBecomeKey(_ notification: Notification) {
         agent.store.frontmost = agent
         sidebar.refresh()
+        browser.refresh()
         // Pick up edits made elsewhere (another app, an agent in a terminal)
         // to notes that have no unsaved changes here.
         for doc in documents where doc.kind == .markdown && !doc.edited { reloadFromDisk(doc) }
@@ -939,8 +990,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.referencesEnabled = false
         workspace = nil
         sidebar.setRoot(AgentSession.defaultDirectory)
-        mediaMode = false
-        sidebar.mediaMode = false
+        browser.isWatched = false
+        browser.setRoot(AgentSession.defaultDirectory)
         updateSidebar()
         refreshChrome()
     }
@@ -950,12 +1001,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         panel.canChooseFiles = false; panel.canChooseDirectories = true
         panel.prompt = "Open Folder"
         if panel.runModal() == .OK, let url = panel.url { open(url: url) }
-    }
-
-    private func openFolderTab(_ url: URL) {
-        if let index = documents.firstIndex(where: { $0.url?.standardizedFileURL.path == url.standardizedFileURL.path && $0.kind == .folder }) { switchTab(to: index); return }
-        documents.append(Document(url: url))
-        switchTab(to: documents.count - 1)
     }
 
     @objc func openDocument(_ sender: Any?) {
@@ -1033,9 +1078,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         let kind = FileKind.classify(url)
         if kind == .folder {
-            restoreWorkspace(root: url, collapsed: false, width: sidebarWidth, media: false)
+            restoreWorkspace(root: url, collapsed: false, width: sidebarWidth)
             app?.addRecentFile(url)
-            place(Document(url: url), replacingPlaceholder: true)
             return true
         }
         if forceNewTab {
@@ -1081,6 +1125,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         guard FileManager.default.fileExists(atPath: url.path), FileManager.default.isReadableFile(atPath: url.path) else {
             NSSound.beep(); return
         }
+        if FileKind.classify(url) == .folder { browse(url); return }
         if let index = documents.firstIndex(where: { $0.url?.standardizedFileURL.path == url.path }) {
             switchTab(to: index); return
         }
@@ -1109,9 +1154,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func restoreTab(url: URL) {
-        if FileKind.classify(url) == .folder {
-            place(Document(url: url), replacingPlaceholder: documents.count == 1)
-        } else { open(url: url) }
+        // Folders no longer open as tabs; older sessions may list them.
+        guard FileKind.classify(url) != .folder else { return }
+        open(url: url)
     }
 
     /// Reopens a draft left behind by a crashed or quit session as a tab.
@@ -1337,8 +1382,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         default: scrolled = false
         }
         pageGlass.setShowing(scrolled)
-        // Folders keep the gallery's fast path: no glass, no bar. The home
-        // page has nothing to list or share.
+        // The home page has nothing to list or share.
         let hasActions = doc.kind == .markdown || doc.kind == .image || doc.wiki?.route != nil
         pageActions.isHidden = !hasActions || viewing
         statusPill.isHidden = !(doc.kind == .markdown || doc.wiki?.article != nil) || viewing
@@ -1438,7 +1482,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
     }
 
-    @objc func wikiBack(_ sender: Any?) { currentDocument.wiki?.goBack() }
+    @objc func wikiBack(_ sender: Any?) {
+        if browsing { browser.goBack() } else { currentDocument.wiki?.goBack() }
+    }
 
     @objc func searchWikipedia(_ sender: Any?) {
         if let page = currentDocument.wiki { page.goHome() } else { newWikiTab(sender) }
@@ -1459,7 +1505,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         agent.openFile = { [weak self] url in
             guard let self else { return }
-            if FileKind.classify(url) == .folder { self.openFolderTab(url) } else { self.open(url: url, forceNewTab: true) }
+            if FileKind.classify(url) == .folder { self.browse(url) } else { self.open(url: url, forceNewTab: true) }
         }
         agent.openArticle = { [weak self] title in self?.openArticle(title) }
         agent.prepareToSend = { [weak self] in self?.saveNotesForAgent() }
@@ -1618,9 +1664,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                                 text: includingText ? doc.storage.string : nil, workingDirectory: directory)
         case .image:
             return AgentContext(kind: .image, title: doc.name, fileURL: doc.url, workingDirectory: directory)
-        case .folder:
-            return AgentContext(kind: .folder, title: doc.name, fileURL: doc.url, workingDirectory: directory)
-        case .unsupported:
+        case .unsupported, .folder:
             return AgentContext(kind: .other, title: doc.name, fileURL: doc.url, workingDirectory: directory)
         }
     }
@@ -1765,7 +1809,7 @@ extension EditorWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(wikiBack(_:)):
-            return currentDocument.wiki?.canGoBack == true
+            return browsing ? browser.canGoBack : currentDocument.wiki?.canGoBack == true
         case #selector(toggleAgent(_:)):
             item.title = agentOpen ? "Hide Assistant" : "Show Assistant"
             return true
