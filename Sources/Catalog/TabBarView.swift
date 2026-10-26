@@ -1,6 +1,7 @@
 import AppKit
 
-/// Minimal terminal-styled tab strip with hover-close and drag-to-detach.
+/// Minimal terminal-styled tab strip with hover-close, drag-to-reorder,
+/// and dragging tabs out into new windows or into another window's strip.
 final class TabBarView: NSView, ThemeRefreshing {
 
     /// Equal gap from the window's top-left corner to the first tab, both axes.
@@ -11,8 +12,22 @@ final class TabBarView: NSView, ThemeRefreshing {
     var onClose: ((Int) -> Void)?
     /// The [+] was clicked; the view anchors the new-tab menu beneath it.
     var onNewTab: ((NSView) -> Void)?
-    /// Fired when a tab is dragged out of the bar; point is in screen coords.
-    var onDetach: ((Int, NSPoint) -> Void)?
+    /// A tab was dragged to a new position in this strip.
+    var onMove: ((Int, Int) -> Void)?
+    /// Another window's strip under a screen point, if one is there.
+    var dropTarget: ((NSPoint) -> TabBarView?)?
+    /// A tab was dropped on another window's strip, at an index there.
+    var onTransfer: ((Int, TabBarView, Int) -> Void)?
+    /// A tab was dropped clear of every strip: the cursor (screen
+    /// coordinates) and where it held the tab, from the tab's top-left.
+    var onDetach: ((Int, NSPoint, NSPoint) -> Void)?
+    /// The page as shown, for the preview under a tab dragged clear.
+    var dragPreview: (() -> NSImage?)?
+
+    private var tabCount = 0
+    /// Opens where another window's tab would drop.
+    private let dropGap = NSView()
+    private var dropGapWidth: NSLayoutConstraint!
 
     var onToggleSidebar: (() -> Void)?
     private let controls = NSView()
@@ -52,7 +67,10 @@ final class TabBarView: NSView, ThemeRefreshing {
         controls.addSubview(toggle)
         toggle.translatesAutoresizingMaskIntoConstraints = false
         controlsWidth = controls.widthAnchor.constraint(equalToConstant: 0)
+        dropGap.translatesAutoresizingMaskIntoConstraints = false
+        dropGapWidth = dropGap.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            dropGapWidth, dropGap.heightAnchor.constraint(equalToConstant: 31),
             controls.leadingAnchor.constraint(equalTo: leadingAnchor), controls.topAnchor.constraint(equalTo: topAnchor),
             controls.bottomAnchor.constraint(equalTo: bottomAnchor), controlsWidth,
             tabScroll.leadingAnchor.constraint(equalTo: controls.trailingAnchor, constant: Self.cornerPadding),
@@ -112,15 +130,15 @@ final class TabBarView: NSView, ThemeRefreshing {
 
     func update(tabs: [(name: String, edited: Bool)], selected: Int) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        tabCount = tabs.count
         for (index, tab) in tabs.enumerated() {
             let item = TabItemView(
                 title: tab.edited ? "\(tab.name) •" : tab.name,
                 active: index == selected
             )
             item.onHoverChange = { [weak self] in self?.refreshHover() }
-            item.onClick = { [weak self] in self?.onSelect?(index) }
+            item.onPress = { [weak self] event in self?.trackPress(on: index, event: event) }
             item.onClose = { [weak self] in self?.onClose?(index) }
-            item.onDetach = { [weak self] screenPoint in self?.onDetach?(index, screenPoint) }
             stack.addArrangedSubview(item)
         }
         let plus = NewTabButton()
@@ -137,6 +155,172 @@ final class TabBarView: NSView, ThemeRefreshing {
             selectedTab.scrollToVisible(selectedTab.bounds)
         }
         refreshHover()
+    }
+
+    // MARK: - Dragging tabs
+
+    private var tabItems: [TabItemView] { stack.arrangedSubviews.compactMap { $0 as? TabItemView } }
+
+    /// The row the tabs ride in, in screen coordinates.
+    private var rowOnScreen: NSRect {
+        guard let window else { return .zero }
+        return window.convertToScreen(tabScroll.convert(tabScroll.bounds, to: nil))
+    }
+
+    /// Whether a tab dragged to `screenPoint` is over this strip (with a
+    /// little slack above and below).
+    func stripContains(_ screenPoint: NSPoint) -> Bool {
+        !isHiddenOrHasHiddenAncestor && rowOnScreen.insetBy(dx: 0, dy: -12).contains(screenPoint)
+    }
+
+    /// Where tab `index` sits, from the window's top-left corner (y down).
+    func tabOffset(at index: Int) -> NSPoint {
+        let items = tabItems
+        guard let window, items.indices.contains(index) else { return NSPoint(x: Self.cornerPadding, y: Self.cornerPadding) }
+        let frame = items[index].convert(items[index].bounds, to: nil)
+        return NSPoint(x: frame.minX, y: window.frame.height - frame.maxY)
+    }
+
+    /// Where a tab centered at `screenX` would drop among this strip's
+    /// tabs, measured as if no gap were open.
+    func dropIndex(at screenX: CGFloat) -> Int {
+        guard let window else { return tabCount }
+        let x = stack.convert(window.convertPoint(fromScreen: NSPoint(x: screenX, y: 0)), from: nil).x
+        var edge = stack.edgeInsets.left
+        var index = 0
+        for item in tabItems where !item.isHidden {
+            if edge + item.frame.width / 2 < x { index += 1 }
+            edge += item.frame.width + stack.spacing
+        }
+        return index
+    }
+
+    /// Opens a tab-wide gap before tab `index`, where a dragged tab would drop.
+    func showDropGap(at index: Int, width: CGFloat) {
+        let arranged = dropGap.superview != nil
+        if arranged, stack.arrangedSubviews.firstIndex(of: dropGap) == index, dropGapWidth.constant == width { return }
+        animateLayout {
+            if arranged { stack.removeArrangedSubview(dropGap); dropGap.removeFromSuperview() }
+            dropGapWidth.constant = width
+            stack.insertArrangedSubview(dropGap, at: min(index, tabItems.count))
+        }
+    }
+
+    func clearDropGap() {
+        guard dropGap.superview != nil else { return }
+        animateLayout { stack.removeArrangedSubview(dropGap); dropGap.removeFromSuperview() }
+    }
+
+    /// Lets the tabs slide into place around a change.
+    private func animateLayout(_ changes: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2
+            context.allowsImplicitAnimation = true
+            changes()
+            stack.setFrameSize(NSSize(width: stack.fittingSize.width, height: 31))
+            stack.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// A press on tab `index` selects it, then follows the drag (with a
+    /// synchronous event loop, since selecting rebuilds the strip). In the
+    /// strip the tab slides past its neighbors; pulled clear, it carries a
+    /// preview of its page and drops as a new window, or into another
+    /// window's strip. The only tab moves its window instead.
+    private func trackPress(on index: Int, event: NSEvent) {
+        guard let window else { return }
+        onSelect?(index)
+        guard tabCount > 1 else { window.performDrag(with: event); return }
+        let items = tabItems
+        guard items.indices.contains(index) else { return }
+        let item = items[index]
+        let size = item.bounds.size
+        let start = window.convertPoint(toScreen: event.locationInWindow)
+        // Where the cursor holds the tab, from its bottom-left.
+        let held = item.convert(event.locationInWindow, from: nil)
+        let grab = NSPoint(x: held.x, y: item.isFlipped ? size.height - held.y : held.y)
+        var ghost: TabDragGhost?
+        var target: TabBarView?
+        var origin = NSPoint.zero
+        var cursor = start
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            cursor = window.convertPoint(toScreen: next.locationInWindow)
+            if next.type == .leftMouseUp { break }
+            if ghost == nil {
+                guard hypot(cursor.x - start.x, cursor.y - start.y) > 4 else { continue }
+                ghost = TabDragGhost(title: item.title, size: size, page: dragPreview?())
+                item.alphaValue = 0
+                ghost?.show()
+            }
+            guard let ghost else { continue }
+            origin = NSPoint(x: cursor.x - grab.x, y: cursor.y - grab.y)
+            let home = stripContains(cursor)
+            let over = home ? nil : dropTarget?(cursor)
+            if over !== target { target?.clearDropGap(); target = over }
+            if home {
+                let row = rowOnScreen
+                origin.y = row.midY - size.height / 2
+                origin.x = min(max(origin.x, row.minX), row.maxX - size.width)
+                slide(item, toMinX: origin.x, maxX: origin.x + size.width)
+            } else {
+                if !item.isHidden { animateLayout { item.isHidden = true } }
+                if let target {
+                    origin.y = target.rowOnScreen.midY - size.height / 2
+                    target.showDropGap(at: target.dropIndex(at: origin.x + size.width / 2), width: size.width)
+                }
+            }
+            ghost.showPreview(!home && target == nil)
+            ghost.move(to: origin)
+        }
+        guard let ghost else { return }
+        let fromTop = NSPoint(x: grab.x, y: size.height - grab.y)
+        if !item.isHidden {
+            // Settle into the slot, then commit the new order.
+            let slot = tabItems.firstIndex(of: item) ?? index
+            let frame = window.convertToScreen(item.convert(item.bounds, to: nil))
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.12
+                ghost.tab.animator().setFrame(frame, display: true)
+            }, completionHandler: { [weak self] in
+                ghost.close()
+                item.alphaValue = 1
+                if slot != index { self?.onMove?(index, slot) }
+            })
+            return
+        }
+        ghost.close()
+        item.alphaValue = 1
+        if let target {
+            let destination = target.dropIndex(at: origin.x + size.width / 2)
+            target.clearDropGap()
+            onTransfer?(index, target, destination)
+        } else {
+            onDetach?(index, cursor, fromTop)
+        }
+    }
+
+    /// Moves the dragged tab's (empty) slot to follow the ghost: past a
+    /// neighbor once the ghost covers half of it.
+    private func slide(_ item: TabItemView, toMinX screenMinX: CGFloat, maxX screenMaxX: CGFloat) {
+        guard let window else { return }
+        let minX = stack.convert(window.convertPoint(fromScreen: NSPoint(x: screenMinX, y: 0)), from: nil).x
+        let maxX = stack.convert(window.convertPoint(fromScreen: NSPoint(x: screenMaxX, y: 0)), from: nil).x
+        if item.isHidden {
+            // Back from outside: reopen where the ghost is.
+            let slot = tabItems.filter { $0 !== item && !$0.isHidden && $0.frame.midX < (minX + maxX) / 2 }.count
+            animateLayout {
+                stack.insertArrangedSubview(item, at: slot)
+                item.isHidden = false
+            }
+            return
+        }
+        let items = tabItems
+        guard let slot = items.firstIndex(of: item) else { return }
+        if slot + 1 < items.count, maxX > items[slot + 1].frame.midX {
+            animateLayout { stack.insertArrangedSubview(item, at: slot + 1) }
+        } else if slot > 0, minX < items[slot - 1].frame.midX {
+            animateLayout { stack.insertArrangedSubview(item, at: slot - 1) }
+        }
     }
 }
 
@@ -231,11 +415,10 @@ private final class TabItemView: NSView {
 
     var onHoverChange: (() -> Void)?
     private var hovered = false
-    var onClick: (() -> Void)?
+    var onPress: ((NSEvent) -> Void)?
     var onClose: (() -> Void)?
-    var onDetach: ((NSPoint) -> Void)?
 
-    private let title: String
+    let title: String
     private let label: NSTextField
     private let closeButton = HoverCloseButton()
 
@@ -244,8 +427,6 @@ private final class TabItemView: NSView {
     private var labelTrailingNormal: NSLayoutConstraint!
     private var labelTrailingHover: NSLayoutConstraint!
     private var frozenWidth: NSLayoutConstraint?
-
-    private var ghost: NSWindow?
 
     init(title: String, active: Bool) {
         self.title = title
@@ -333,83 +514,83 @@ private final class TabItemView: NSView {
         }
     }
 
-    // MARK: - Click / drag-to-detach
+    // Selecting the tab rebuilds the strip, so the bar tracks the drag.
+    override func mouseDown(with event: NSEvent) { onPress?(event) }
+}
 
-    // Selecting the tab rebuilds the tab bar, which removes this view from
-    // the hierarchy mid-gesture — so ordinary mouseDragged/mouseUp dispatch
-    // never reaches it. Track the drag with a synchronous event loop
-    // instead, which keeps working after the rebuild.
-    override func mouseDown(with event: NSEvent) {
-        guard let window else { return }
-        // The tab bar strip in window coordinates, before self is rebuilt.
-        let barOnScreen: NSRect
-        if let bar = enclosingTabBar() {
-            barOnScreen = window.convertToScreen(bar.convert(bar.bounds, to: nil))
-        } else {
-            barOnScreen = .zero
-        }
+/// A borderless, click-through window that follows the cursor.
+private func floatingWindow(_ content: NSView) -> NSWindow {
+    let window = NSWindow(contentRect: content.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.level = .floating
+    window.ignoresMouseEvents = true
+    window.hasShadow = true
+    window.isReleasedWhenClosed = false
+    window.contentView = content
+    return window
+}
 
-        onClick?()
+/// What follows the cursor while a tab is dragged: the tab itself and,
+/// once it is clear of every strip, a small preview of its page hanging
+/// beneath it, as the window it will become.
+private final class TabDragGhost {
+    let tab: NSWindow
+    private let preview: NSWindow?
 
-        let origin = event.locationInWindow
-        var detachPoint: NSPoint?
-        while true {
-            guard let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
-            let point = next.locationInWindow
-            if next.type == .leftMouseUp {
-                if ghost != nil {
-                    let screenPoint = window.convertPoint(toScreen: point)
-                    if !barOnScreen.insetBy(dx: -24, dy: -24).contains(screenPoint) {
-                        detachPoint = screenPoint
-                    }
-                }
-                break
-            }
-            if ghost == nil, hypot(point.x - origin.x, point.y - origin.y) > 12 {
-                makeGhost()
-            }
-            if let ghost {
-                let screenPoint = window.convertPoint(toScreen: point)
-                ghost.setFrameOrigin(NSPoint(x: screenPoint.x - ghost.frame.width / 2,
-                                             y: screenPoint.y - ghost.frame.height / 2))
-            }
-        }
-        ghost?.close()
-        ghost = nil
-        if let detachPoint { onDetach?(detachPoint) }
-    }
-
-    private func enclosingTabBar() -> NSView? {
-        var view: NSView? = superview
-        while view != nil, !(view is TabBarView) { view = view?.superview }
-        return view
-    }
-
-    /// A floating pill following the cursor while dragging, like browsers.
-    private func makeGhost() {
-        let ghostLabel = NSTextField(labelWithString: title)
-        ghostLabel.font = Theme.interfaceFont(size: 13.5)
-        ghostLabel.textColor = Theme.foreground
-        let size = ghostLabel.intrinsicContentSize
-        let frame = NSRect(x: 0, y: 0, width: size.width + 24, height: size.height + 10)
-
-        let panel = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.level = .floating
-        panel.ignoresMouseEvents = true
-        panel.hasShadow = true
-        panel.isReleasedWhenClosed = false
-
-        let content = NSView(frame: frame)
+    init(title: String, size: NSSize, page: NSImage?) {
+        let content = NSView(frame: NSRect(origin: .zero, size: size))
         content.wantsLayer = true
-        content.layer?.backgroundColor = Theme.background.withAlphaComponent(0.85).cgColor
-        content.layer?.cornerRadius = 6
-        ghostLabel.frame = NSRect(x: 12, y: 5, width: size.width, height: size.height)
-        content.addSubview(ghostLabel)
-        panel.contentView = content
-        panel.orderFront(nil)
-        ghost = panel
+        content.layer?.backgroundColor = Theme.background.withAlphaComponent(0.96).cgColor
+        content.layer?.cornerRadius = TabBarView.pillRadius
+        content.layer?.cornerCurve = .continuous
+        let item = TabItemView(title: title, active: true)
+        item.frame = content.bounds
+        item.translatesAutoresizingMaskIntoConstraints = true
+        item.autoresizingMask = [.width, .height]
+        content.addSubview(item)
+        tab = floatingWindow(content)
+
+        if let page, page.size.width > 0 {
+            let width: CGFloat = 260
+            let height = min(width * page.size.height / page.size.width, 320)
+            let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+            imageView.image = page
+            imageView.imageScaling = .scaleAxesIndependently
+            imageView.wantsLayer = true
+            imageView.layer?.cornerRadius = 12
+            imageView.layer?.cornerCurve = .continuous
+            imageView.layer?.masksToBounds = true
+            imageView.layer?.borderWidth = 1
+            imageView.layer?.borderColor = Theme.wash.withAlphaComponent(0.12).cgColor
+            preview = floatingWindow(imageView)
+            preview?.alphaValue = 0
+        } else {
+            preview = nil
+        }
+    }
+
+    func show() {
+        preview?.orderFront(nil)
+        tab.orderFront(nil)
+    }
+
+    func move(to origin: NSPoint) {
+        tab.setFrameOrigin(origin)
+        preview?.setFrameTopLeftPoint(NSPoint(x: origin.x, y: origin.y - 6))
+    }
+
+    func showPreview(_ showing: Bool) {
+        guard let preview, (preview.alphaValue > 0) != showing else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            preview.animator().alphaValue = showing ? 0.94 : 0
+        }
+    }
+
+    func close() {
+        preview?.close()
+        tab.close()
     }
 }
 

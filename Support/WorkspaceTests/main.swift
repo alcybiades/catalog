@@ -742,6 +742,30 @@ MainActor.assumeIsolated {
 }
 controller.window?.orderOut(nil); restored.window?.orderOut(nil)
 
+// Moving a tab between windows keeps its unsaved text, undo, and selection;
+// windows share one assistant.
+MainActor.assumeIsolated {
+    let app = AppDelegate()
+    let staying = Document()
+    let first = app.makeWindow(documents: [staying, Document(), Document()])
+    first.switchTab(to: 1)
+    first.textView.insertText("moving words", replacementRange: NSRange(location: 0, length: 0))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))  // closes the typing's undo group
+    first.textView.setSelectedRange(NSRange(location: 3, length: 2))
+    let moved = first.currentDocument
+    guard let second = app.moveTab(from: first, at: 1) else { check("tab moves into a new window", false); return }
+    check("tab moves into a new window", first.documents.count == 2 && second.documents.first === moved && app.controllers.count == 2)
+    check("moved tab keeps its edits and selection", second.textView.string == "moving words" && moved.edited
+          && second.textView.selectedRange() == NSRange(location: 3, length: 2))
+    second.textView.undoManager?.undo()
+    check("moved tab's typing undoes in its new window", moved.storage.string.isEmpty)
+    check("the only tab never moves", app.moveTab(from: second, at: 0) == nil)
+    app.moveTab(from: first, at: 0, to: second, targetIndex: 0)
+    check("dropping on another strip inserts there", second.documents.map(ObjectIdentifier.init) == [staying, moved].map(ObjectIdentifier.init)
+          && second.current == 0)
+    check("windows share one assistant", first.agent.store === second.agent.store && first.agent !== second.agent)
+    app.controllers.forEach { $0.window?.orderOut(nil) }
+}
 let draftDoc = Document(url: fixture.appendingPathComponent("Draft.md"), content: "unsaved")
 _ = RecoveryStore.draft(forPath: "/nonexistent")  // builds the index before the writes
 RecoveryStore.write(draftDoc)

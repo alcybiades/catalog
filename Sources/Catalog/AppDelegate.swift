@@ -75,7 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return args[index + 1]
         }
         if let title = value(after: "--wiki") { keyController?.openArticle(title) }
-        if args.contains("--assistant") || value(after: "--ask") != nil { keyController?.setAgentOpen(true) }
+        // `--move-tab` runs Move Tab to New Window on the current tab.
+        if args.contains("--move-tab"), let source = keyController { moveTab(from: source, at: source.current) }
+        if args.contains("--assistant") || value(after: "--ask") != nil { controllers.forEach { $0.setAgentOpen(true) } }
         if let offset = value(after: "--scroll").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.scrollPage(to: CGFloat(offset)) }
         }
@@ -100,13 +102,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         .write(to: URL(fileURLWithPath: outPath))
                 }
                 keyController?.dumpLineFragments(to: outPath + ".layout.txt")
+                // Other editor windows (e.g. after --move-tab) beside it: name-2.png, …
+                let others = controllers.compactMap(\.window).filter { $0 !== window && !args.contains("--settings") }
+                for (offset, other) in others.enumerated() {
+                    guard let image = Self.windowImage(other) else { continue }
+                    let path = (outPath as NSString).deletingPathExtension + "-\(offset + 2).png"
+                    try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: path))
+                }
             }
         }
     }
 
     private typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
 
-    private static func windowImage(_ window: NSWindow) -> CGImage? {
+    static func windowImage(_ window: NSWindow) -> CGImage? {
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
         let create = unsafeBitCast(symbol, to: CreateWindowImage.self)
         // kCGWindowListOptionIncludingWindow = 1 << 3; kCGWindowImageBoundsIgnoreFraming = 1 << 0
@@ -142,6 +152,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateNow
     }
 
+    /// Windows share the assistant, so its replies stop only with the app.
+    func applicationWillTerminate(_ notification: Notification) {
+        AgentStore.shared.stopAll()
+    }
+
     // MARK: - Windows
 
     private var cascadePoint = NSPoint.zero
@@ -155,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let frameString, let window = controller.window {
             var frame = NSRectFromString(frameString)
             if frame.width > 100 {
-                if let screen = NSScreen.main {
+                if let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }) ?? NSScreen.main {
                     frame = window.constrainFrameRect(frame, to: screen)
                 }
                 window.setFrame(frame, display: false)
@@ -181,18 +196,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !controllers.isEmpty { sessionChanged() }
     }
 
-    /// Detach a tab into its own window at the drop point.
-    func detachTab(from source: EditorWindowController, index: Int, to screenPoint: NSPoint) {
-        guard let doc = source.removeDocument(at: index) else { return }
-        let controller = makeWindow(documents: [doc])
-        if let window = controller.window, let sourceFrame = source.window?.frame {
-            window.setFrame(sourceFrame, display: false)
-            window.setFrameTopLeftPoint(NSPoint(x: screenPoint.x - 60, y: screenPoint.y + 18))
-            if let screen = window.screen ?? NSScreen.main {
-                window.setFrame(window.constrainFrameRect(window.frame, to: screen), display: false)
-            }
+    /// Moves a tab, document intact, into `target` at `targetIndex`, else
+    /// into a new window the size of its old one: placed so the tab lands
+    /// under `cursor` (held `grab` from its top-left), or cascaded. The
+    /// last tab never moves, so no window is left empty.
+    @discardableResult
+    func moveTab(from source: EditorWindowController, at index: Int,
+                 to target: EditorWindowController? = nil, targetIndex: Int = .max,
+                 cursor: NSPoint? = nil, grab: NSPoint = .zero) -> EditorWindowController? {
+        guard target !== source, let sourceFrame = source.window?.frame,
+              let doc = source.removeDocument(at: index) else { return nil }
+        if let target {
+            target.insertDocument(doc, at: targetIndex)
+            target.window?.makeKeyAndOrderFront(nil)
+            return target
         }
+        let controller = makeWindow(documents: [doc], frame: NSStringFromRect(sourceFrame.offsetBy(dx: 24, dy: -24)))
+        // A note from the open folder keeps its sidebar, so links and
+        // references resolve as they did.
+        if let workspace = source.workspace, let path = doc.url?.standardizedFileURL.pathComponents,
+           path.starts(with: workspace.root.standardizedFileURL.pathComponents) {
+            controller.restoreWorkspace(root: workspace.root, collapsed: source.sidebarCollapsed,
+                                        width: source.sidebarWidth, media: source.mediaMode)
+        }
+        if let cursor, let window = controller.window {
+            window.contentView?.layoutSubtreeIfNeeded()
+            let tab = controller.tabBar.tabOffset(at: 0)
+            var frame = window.frame
+            frame.origin = NSPoint(x: cursor.x - tab.x - grab.x, y: cursor.y + tab.y + grab.y - frame.height)
+            let screen = NSScreen.screens.first { $0.frame.contains(cursor) } ?? window.screen
+            window.setFrame(screen.map { window.constrainFrameRect(frame, to: $0) } ?? frame, display: false)
+        }
+        controller.restoreScroll(of: doc)
         controller.window?.makeKeyAndOrderFront(nil)
+        return controller
+    }
+
+    /// The tab strip of the Catalog window frontmost at `screenPoint`,
+    /// unless another window covers it there.
+    func tabBar(at screenPoint: NSPoint, excluding source: EditorWindowController) -> TabBarView? {
+        for window in NSApp.orderedWindows where window.isVisible && !window.ignoresMouseEvents {
+            guard window.frame.contains(screenPoint) else { continue }
+            guard window !== source.window, let controller = controllers.first(where: { $0.window === window }),
+                  controller.tabBar.stripContains(screenPoint) else { return nil }
+            return controller.tabBar
+        }
+        return nil
     }
 
     /// Focuses the tab holding `url` in any window, if it is already open.
