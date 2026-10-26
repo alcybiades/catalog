@@ -22,9 +22,6 @@ what it finds into your notes.
 
 ![Wikipedia articles next to a project folder](docs/3.png)
 
-Wikipedia pages open as tabs next to your notes and images. Drag any tab out
-to open it in its own window.
-
 ### Browse folders and images
 
 ![A note with an image, and an image gallery](docs/4.png)
