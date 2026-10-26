@@ -26,19 +26,20 @@ final class GalleryThumbnailView: NSView {
 
 /// Fixed-size tiles keep image intrinsic-size changes out of the window's
 /// Auto Layout engine while thumbnails arrive during scrolling.
-private final class MediaTile: NSView {
+private final class MediaTile: NSView, ThemeRefreshing {
     let thumbnail = GalleryThumbnailView()
     let caption = NSTextField(labelWithString: "")
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         caption.font = Theme.interfaceFont(size: 10)
-        caption.textColor = Theme.secondary
         caption.alignment = .center
         caption.lineBreakMode = .byTruncatingMiddle
+        applyTheme()
         addSubview(thumbnail); addSubview(caption)
     }
     required init?(coder: NSCoder) { fatalError() }
+    func applyTheme() { caption.textColor = Theme.secondary }
     override func layout() {
         super.layout()
         caption.frame = NSRect(x: 0, y: 5, width: bounds.width, height: 16)
@@ -65,6 +66,8 @@ private final class MediaItem: NSCollectionViewItem {
         stopLoading()
         representedURL = url
         textField?.stringValue = url.lastPathComponent
+        // Tiles waiting for reuse missed any theme change.
+        textField?.textColor = Theme.secondary
         // Native tooltip display can synchronously block on WindowServer
         // while cells move beneath a stationary pointer. The caption and
         // accessibility label already expose the filename.
@@ -106,7 +109,7 @@ private final class GalleryCollectionView: NSCollectionView {
     override class var isCompatibleWithResponsiveScrolling: Bool { false }
 }
 
-final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDelegate {
+final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDelegate, ThemeRefreshing {
     var onOpen: ((URL, NSRect) -> Void)?
     var onNavigate: ((URL) -> Void)?
     private let scroll = NSScrollView()
@@ -145,11 +148,13 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.wantsLayer = true
-        message.font = Theme.interfaceFont(size: 14); message.textColor = Theme.secondary; message.alignment = .center
+        message.font = Theme.interfaceFont(size: 14); message.alignment = .center
+        applyTheme()
         breadcrumbs.onNavigate = { [weak self] url in self?.onNavigate?(url) }
         [scroll, imageView, message, breadcrumbs].forEach(addSubview)
     }
     required init?(coder: NSCoder) { fatalError() }
+    func applyTheme() { message.textColor = Theme.secondary }
     override var acceptsFirstResponder: Bool { true }
     override func layout() {
         super.layout()

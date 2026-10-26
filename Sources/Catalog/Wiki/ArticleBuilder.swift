@@ -95,9 +95,10 @@ struct InlineBuilder {
         var content = text
         var container = AttributeContainer()
         var intent: InlinePresentationIntent = []
-        if style.bold { intent.insert(.stronglyEmphasized); container.foregroundColor = WikiTheme.bold }
-        if style.italic { intent.insert(.emphasized); if !style.bold { container.foregroundColor = WikiTheme.italic } }
-        if style.code { intent.insert(.code); container.foregroundColor = WikiTheme.inlineCode }
+        // Colors come from the intents at display time: WikiTheme.styled.
+        if style.bold { intent.insert(.stronglyEmphasized) }
+        if style.italic { intent.insert(.emphasized) }
+        if style.code { intent.insert(.code) }
         if style.strike { intent.insert(.strikethrough) }
         if !intent.isEmpty { container.inlinePresentationIntent = intent }
         if style.isSuperscript || style.isSubscript {
@@ -108,10 +109,7 @@ struct InlineBuilder {
                 container.baselineOffset = style.isSuperscript ? 5 : -3
             }
         }
-        if let link = style.link {
-            container.link = link
-            container.underlineStyle = Text.LineStyle(pattern: .solid, color: WikiTheme.link.opacity(0.25))
-        }
+        if let link = style.link { container.link = link }
         output.append(AttributedString(content, attributes: container))
         isEmpty = false
     }

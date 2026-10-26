@@ -11,7 +11,7 @@ final class ReferencePicker: NSObject, NSTableViewDataSource, NSTableViewDelegat
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 220), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.isReleasedWhenClosed = false
-        panel.hasShadow = true; panel.backgroundColor = Theme.background
+        panel.hasShadow = true
         panel.level = .popUpMenu
         let scroll = NSScrollView(frame: panel.contentView!.bounds)
         scroll.autoresizingMask = [.width, .height]
@@ -26,6 +26,7 @@ final class ReferencePicker: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
     func show(_ candidates: [(URL, String)], below rect: NSRect, parent: NSWindow) {
         self.candidates = candidates
+        panel.backgroundColor = Theme.background
         table.reloadData()
         if !candidates.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         let height = CGFloat(min(max(candidates.count, 1), 7)) * 32 + 8

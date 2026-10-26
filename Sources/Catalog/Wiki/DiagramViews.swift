@@ -2,10 +2,10 @@ import SwiftUI
 
 extension WikiTheme {
     /// Wikipedia's diagram colors are pastels meant for white paper; blended
-    /// into the dark glass they keep their hue without glaring.
+    /// into the page they keep their hue without glaring.
     static func diagramFill(_ hex: UInt32?) -> Color {
-        guard let hex else { return Color.white.opacity(0.06) }
-        return Color(hex: 0x1C1D22).mix(with: Color(hex: hex), by: 0.42)
+        guard let hex else { return wash.opacity(0.06) }
+        return diagramBase.mix(with: Color(hex: hex), by: 0.42)
     }
 
     static func cardLabel(_ text: String) -> some View {
@@ -23,7 +23,7 @@ struct CardBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .background(WikiTheme.wash.opacity(0.04), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(WikiTheme.hairline, lineWidth: 1)
             }
@@ -59,7 +59,7 @@ struct GraphicalTimelineView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "chart.bar.yaxis")
                     if let title = timeline.title {
-                        Text(title).textCase(.uppercase)
+                        Text(WikiTheme.styled(title)).textCase(.uppercase)
                     } else {
                         Text("Timeline").textCase(.uppercase)
                     }
@@ -77,7 +77,7 @@ struct GraphicalTimelineView: View {
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available = $0 }
             if let caption = timeline.caption {
-                Text(caption)
+                Text(WikiTheme.styled(caption))
                     .font(WikiTheme.interface(size: max(11, em * 0.9)))
                     .foregroundStyle(WikiTheme.secondary)
                     .tint(WikiTheme.link.opacity(0.85))
@@ -95,7 +95,7 @@ struct GraphicalTimelineView: View {
         return HStack(alignment: .top, spacing: 0) {
             scale.frame(width: timeline.scaleWidth * em, height: height)
             ZStack(alignment: .topLeading) {
-                Rectangle().fill(Color.white.opacity(0.025))
+                Rectangle().fill(WikiTheme.wash.opacity(0.025))
                 ForEach(Array(timeline.bars.enumerated()), id: \.offset) { _, bar in
                     Rectangle()
                         .fill(WikiTheme.diagramFill(bar.color))
@@ -134,7 +134,7 @@ struct GraphicalTimelineView: View {
 
     @ViewBuilder
     private func label(_ bar: GraphicalTimeline.Bar) -> some View {
-        let text = Text(bar.label)
+        let text = Text(WikiTheme.styled(bar.label))
             .font(font.family == "Verdana" ? WikiTheme.interface(size: em * 0.9) : WikiTheme.body(font.family, size: em * 0.95))
             .foregroundStyle(WikiTheme.foreground)
             .tint(WikiTheme.link)
@@ -158,7 +158,7 @@ struct GraphicalTimelineView: View {
             ForEach(Array(timeline.notes.enumerated()), id: \.offset) { _, note in
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("←").foregroundStyle(WikiTheme.listMarker)
-                    Text(note.text)
+                    Text(WikiTheme.styled(note.text))
                         .foregroundStyle(WikiTheme.foreground)
                         .tint(WikiTheme.link)
                         .fixedSize(horizontal: false, vertical: true)
@@ -279,13 +279,13 @@ struct CladogramView: View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(alignment: .center, spacing: 8) {
                 if let label = node.label {
-                    Text(label)
+                    Text(WikiTheme.styled(label))
                         .font(font.scaled(0.84).weight(.semibold))
                         .foregroundStyle(WikiTheme.heading)
                         .tint(WikiTheme.heading)
                 }
                 if let text = node.text {
-                    Text(text)
+                    Text(WikiTheme.styled(text))
                         .font(font.scaled(0.84))
                         .foregroundStyle(WikiTheme.foreground)
                         .tint(WikiTheme.link)
@@ -304,7 +304,7 @@ struct CladogramView: View {
             }
             .fixedSize()
             if let sublabel = node.sublabel {
-                Text(sublabel)
+                Text(WikiTheme.styled(sublabel))
                     .font(font.scaled(0.72).italic())
                     .foregroundStyle(WikiTheme.secondary)
                     .tint(WikiTheme.link)
@@ -359,7 +359,7 @@ struct LocationMapView: View {
             .buttonStyle(PressableStyle())
             .frame(maxWidth: .infinity)
             if let caption {
-                Text(caption)
+                Text(WikiTheme.styled(caption))
                     .font(font.scaled(0.8))
                     .foregroundStyle(WikiTheme.secondary)
                     .tint(WikiTheme.link.opacity(0.85))
@@ -383,7 +383,7 @@ struct LocationMapView: View {
                     .frame(width: dot, height: dot)
                     .position(point)
                 if let label = marker.label {
-                    Text(label)
+                    Text(WikiTheme.styled(label))
                         .font(WikiTheme.interface(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.9), radius: 2)
@@ -435,7 +435,7 @@ struct GeologicRangeView: View {
             .frame(height: 24)
             .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             if let text = range.text {
-                Text(text)
+                Text(WikiTheme.styled(text))
                     .font(WikiTheme.interface(size: max(11, font.size * 0.62)))
                     .foregroundStyle(WikiTheme.code)
                     .tint(WikiTheme.code)

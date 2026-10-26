@@ -24,11 +24,11 @@ final class CatalogWindow: NSWindow {
 /// Configures `window` to match the WezTerm backdrop: transparent window,
 /// background blur radius 30, and a #141414 tint at exactly 0.60 opacity
 /// painted by the returned container view (install subviews into it).
+/// Opaque themes paint their background solid, without the blur.
 @discardableResult
 func applyTerminalBackdrop(to window: NSWindow) -> NSView {
     window.isOpaque = false
     window.backgroundColor = .clear
-    window.appearance = NSAppearance(named: .darkAqua)
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
     if #available(macOS 26.0, *) {
@@ -47,13 +47,20 @@ func applyTerminalBackdrop(to window: NSWindow) -> NSView {
 
     let container = NSView()
     container.wantsLayer = true
-    container.layer?.backgroundColor =
-        Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
     // Do not round the backdrop separately: AppKit clips the tint, content,
     // blur and native edge to the same window outline, including during resize.
     window.contentView = container
-
-    CGSSetWindowBackgroundBlurRadius(
-        CGSDefaultConnectionForThread(), UInt32(window.windowNumber), 30)
+    applyThemeBackdrop(to: window)
     return container
+}
+
+/// Applies the current theme's appearance, tint, and blur to a window set
+/// up by `applyTerminalBackdrop`.
+func applyThemeBackdrop(to window: NSWindow) {
+    let palette = Theme.palette
+    window.appearance = palette.appearance
+    window.contentView?.layer?.backgroundColor =
+        palette.background.withAlphaComponent(palette.backgroundOpacity).cgColor
+    CGSSetWindowBackgroundBlurRadius(
+        CGSDefaultConnectionForThread(), UInt32(window.windowNumber), UInt32(palette.blurRadius))
 }

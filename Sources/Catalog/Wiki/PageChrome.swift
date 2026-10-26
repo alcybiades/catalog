@@ -141,7 +141,7 @@ struct PageActionsView: View {
         PageActions(outline: chrome.outline, contentsEnabled: chrome.hasOutline,
                     share: chrome.share, onJump: chrome.jump)
             .tint(WikiTheme.foreground)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(WikiTheme.colorScheme)
             .fixedSize()
     }
 }
@@ -202,17 +202,16 @@ struct ChatDock: View {
         }
         .animation(chrome.chatMorphAnimated ? Self.morph : nil, value: chrome.chatFloating)
         .tint(WikiTheme.foreground)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
     }
 }
 
 /// Where a floating panel dragged to the window's right edge will dock.
-final class ChatDockHint: NSView {
+final class ChatDockHint: NSView, ThemeRefreshing {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = Theme.foreground.withAlphaComponent(0.10).cgColor
-        layer?.borderColor = Theme.foreground.withAlphaComponent(0.35).cgColor
+        applyTheme()
         layer?.borderWidth = 1
         layer?.cornerRadius = ChatDock.size / 2
         layer?.cornerCurve = .continuous
@@ -220,6 +219,11 @@ final class ChatDockHint: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func applyTheme() {
+        layer?.backgroundColor = Theme.foreground.withAlphaComponent(0.10).cgColor
+        layer?.borderColor = Theme.foreground.withAlphaComponent(0.35).cgColor
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -243,7 +247,7 @@ final class ChatDockHint: NSView {
 /// content), fading out below the bar. Installed only while content is
 /// under the tabs: a live backdrop otherwise keeps the window on the
 /// slower compositing path.
-final class PageGlassBackdrop: NSView {
+final class PageGlassBackdrop: NSView, ThemeRefreshing {
     private var glass: NSGlassEffectView?
     private let fade = CAGradientLayer()
 
@@ -273,14 +277,18 @@ final class PageGlassBackdrop: NSView {
 
     var isShowing: Bool { glass != nil }
 
+    func applyTheme() { glass?.tintColor = Self.tint }
+
+    /// A touch of the window's own tint keeps text over the glass legible.
+    private static var tint: NSColor { Theme.background.withAlphaComponent(0.35) }
+
     func setShowing(_ showing: Bool) {
         guard showing != isShowing else { return }
         if showing {
             let glass = NSGlassEffectView(frame: bounds)
             glass.autoresizingMask = [.width, .height]
             glass.cornerRadius = 0
-            // A touch of the window's own tint keeps text over the glass legible.
-            glass.tintColor = Theme.background.withAlphaComponent(0.35)
+            glass.tintColor = Self.tint
             glass.alphaValue = 0
             addSubview(glass)
             self.glass = glass
@@ -359,7 +367,7 @@ struct WikiTabView: View {
         .environment(page)
         .environment(\.openURL, OpenURLAction { page.handle($0) })
         .tint(WikiTheme.foreground)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
     }
 }
 
@@ -378,7 +386,7 @@ struct WikiBackButton: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
         .help("Back (⌘[)")
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
         .fixedSize()
     }
 }
@@ -396,7 +404,7 @@ struct WikiTitlePill: View {
             .frame(height: PageMetrics.control)
             .glassEffect(.regular, in: Capsule())
             .frame(maxWidth: 420)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(WikiTheme.colorScheme)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
