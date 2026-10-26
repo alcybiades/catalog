@@ -3,9 +3,13 @@
 - Run regression tests with `make test`; the test executables compile with
   `CATALOG_TESTING` and use isolated preferences and recovery drafts.
 - For automated UI checks, launch a separate app instance with `--test-mode`
-  (for example, `open -na /Applications/Catalog.app --args --test-mode`), or set
+  (for example, `open -gna /Applications/Catalog.app --args --test-mode`), or set
   `CATALOG_TEST_MODE=1` when launching the executable. Never create scratch tabs
   or type test content into the user's normal Catalog session.
+- Test-mode instances run in the background (no Dock icon or menu bar) and never
+  take focus, so the user can keep typing elsewhere. Always pass `-g` to `open`;
+  never activate a test instance or send it keystrokes. Liquid Glass draws in its
+  inactive style in these windows; that is expected.
 - Use temporary fixture files for edits. Test mode isolates app state, but
   explicitly opened files still save to their supplied paths.
 - A preview intended for the user to use with their own documents may launch
