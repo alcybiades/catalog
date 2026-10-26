@@ -14,7 +14,6 @@ struct HomeView: View {
     @State private var suggestions: [String] = []
     @State private var highlighted: Int?
     @FocusState private var searchFocused: Bool
-    @Namespace private var glass
 
     private var isLauncher: Bool { page.style == .home }
 
@@ -90,75 +89,54 @@ struct HomeView: View {
         // Rounded like a capsule at field height; suggestions extend the
         // same shape downward instead of floating as a separate card.
         let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2, style: .continuous)
-        return GlassEffectContainer(spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(spacing: 0) {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
-                    TextField("Search Wikipedia", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(WikiTheme.body(bodyFamily, size: 16))
-                        .foregroundStyle(WikiTheme.foreground)
-                        .focused($searchFocused)
-                        .autocorrectionDisabled()
-                        .onSubmit(go)
-                        .onKeyPress(.downArrow) { moveHighlight(1) }
-                        .onKeyPress(.upArrow) { moveHighlight(-1) }
-                        .onKeyPress(.escape) {
-                            guard !suggestions.isEmpty else { return .ignored }
-                            suggestions = []
-                            return .handled
-                        }
-                    if hasQuery {
-                        Button {
-                            query = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(WikiTheme.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.opacity.combined(with: .scale(0.6)))
-                        .accessibilityLabel("Clear")
+        return VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
+                TextField("Search Wikipedia", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(WikiTheme.body(bodyFamily, size: 16))
+                    .foregroundStyle(WikiTheme.foreground)
+                    .focused($searchFocused)
+                    .autocorrectionDisabled()
+                    .onSubmit(go)
+                    .onKeyPress(.downArrow) { moveHighlight(1) }
+                    .onKeyPress(.upArrow) { moveHighlight(-1) }
+                    .onKeyPress(.escape) {
+                        guard !suggestions.isEmpty else { return .ignored }
+                        suggestions = []
+                        return .handled
                     }
-                }
-                .padding(.horizontal, 16)
-                .frame(height: Self.fieldHeight)
-                .contentShape(Rectangle())
-                .onTapGesture { searchFocused = true }
-
-                if expanded {
-                    Rectangle()
-                        .fill(WikiTheme.hairline)
-                        .frame(height: 1)
-                        .padding(.horizontal, 16)
-                    suggestionRows
-                }
-                }
-                .background(WikiTheme.background.opacity(expanded ? 0.85 : 0), in: shape)
-                .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(expanded ? 1 : 0))
-                .glassEffect(.regular.interactive(), in: shape)
-                .glassEffectID("field", in: glass)
-
                 if hasQuery {
-                    Button(action: go) {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 26, height: 26)
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(WikiTheme.secondary)
                     }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(WikiTheme.foreground.opacity(0.8))
-                    .glassEffectID("go", in: glass)
-                    .help("I’m Feeling Lucky")
-                    .accessibilityLabel("Go")
-                    .transition(.scale(0.5).combined(with: .opacity))
-                    .frame(height: Self.fieldHeight)
+                    .buttonStyle(.plain)
+                    .transition(.opacity.combined(with: .scale(0.6)))
+                    .accessibilityLabel("Clear")
                 }
             }
+            .padding(.horizontal, 16)
+            .frame(height: Self.fieldHeight)
+            .contentShape(Rectangle())
+            .onTapGesture { searchFocused = true }
+
+            if expanded {
+                Rectangle()
+                    .fill(WikiTheme.hairline)
+                    .frame(height: 1)
+                    .padding(.horizontal, 16)
+                suggestionRows
+            }
         }
+        .background(WikiTheme.background.opacity(expanded ? 0.85 : 0), in: shape)
+        .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(expanded ? 1 : 0))
+        .glassEffect(.regular.interactive(), in: shape)
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hasQuery)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.96)
