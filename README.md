@@ -1,7 +1,6 @@
 # Catalog
 
-A Markdown editor, file browser, and Wikipedia reader for macOS, with a
-built-in agent.
+Catalog is your go-to tool for browsing and editing agent filesystems natively on Mac. It features a built-in agent that can modify any file and natively embed Wikipedia articles for research tasks.
 
 ### Write and edit, with an agent beside you
 
