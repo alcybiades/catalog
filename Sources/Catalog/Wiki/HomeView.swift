@@ -5,6 +5,7 @@ import SwiftUI
 /// Wikipedia tab it is Encyclopedia's search page.
 struct HomeView: View {
     @Environment(WikiPage.self) private var page
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
 
     @State private var query = ""
@@ -37,7 +38,9 @@ struct HomeView: View {
         .scrollBounceBehavior(.basedOnSize)
         .onAppear {
             recentFiles = page.homeActions?.recentFiles() ?? []
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.85).delay(0.05)) { appeared = true }
+            withAnimation((reduceMotion ? Animation.easeOut(duration: 0.3) : .spring(response: 0.7, dampingFraction: 0.85)).delay(0.05)) {
+                appeared = true
+            }
             searchFocused = true
         }
         .onChange(of: page.searchFocusRequest) {
@@ -55,7 +58,7 @@ struct HomeView: View {
             Image(systemName: isLauncher ? "text.book.closed.fill" : "book.closed.fill")
                 .font(.system(size: 38, weight: .regular))
                 .foregroundStyle(WikiTheme.heading.gradient)
-                .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
+                .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared && !reduceMotion)
                 .padding(.bottom, 2)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
                 .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
@@ -70,7 +73,7 @@ struct HomeView: View {
                 .multilineTextAlignment(.center)
         }
         .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : 14)
+        .offset(y: appeared || reduceMotion ? 0 : 14)
     }
 
     private var searchField: some View {
@@ -126,7 +129,7 @@ struct HomeView: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hasQuery)
         .opacity(appeared ? 1 : 0)
-        .scaleEffect(appeared ? 1 : 0.96)
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.96)
     }
 
     /// The launcher's other starting points, beside Wikipedia's search.

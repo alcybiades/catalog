@@ -6,6 +6,7 @@ struct ArticleScreen: View {
     let route: ArticleRoute
 
     @Environment(WikiPage.self) private var page
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WikiTheme.fontSizeKey, store: AppState.defaults) private var fontSize = WikiTheme.defaultFontSize
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
 
@@ -41,7 +42,7 @@ struct ArticleScreen: View {
             }
             .onChange(of: page.scrollTarget) { _, target in
                 guard let target else { return }
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.9)) {
                     proxy.scrollTo(target, anchor: .top)
                 }
                 page.scrollTarget = nil
@@ -65,7 +66,7 @@ struct ArticleScreen: View {
             ArticleBody(article: article, font: font) { item in
                 withAnimation(.easeInOut(duration: 0.2)) { page.viewer = item }
             }
-            .transition(.opacity.combined(with: .offset(y: 12)))
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 12)))
         }
     }
 
@@ -82,7 +83,9 @@ struct ArticleScreen: View {
             if route.isRandom { query = try await WikipediaClient.randomTitle() }
             let article = try await WikipediaClient.article(for: query)
             guard !Task.isCancelled else { return }
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) { phase = .loaded(article) }
+            withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.9)) {
+                phase = .loaded(article)
+            }
             page.loaded(article, for: route)
             if let fragment = route.fragment {
                 let wanted = fragment.replacingOccurrences(of: " ", with: "_").lowercased()
@@ -208,6 +211,7 @@ private struct LoadingView: View {
     let title: String?
     let font: ReaderFont
     @State private var shimmer = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -236,6 +240,7 @@ private struct LoadingView: View {
             )
         }
         .onAppear {
+            guard !reduceMotion else { return }
             withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { shimmer = true }
         }
         .accessibilityLabel("Loading article")

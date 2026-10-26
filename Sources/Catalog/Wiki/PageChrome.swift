@@ -167,6 +167,8 @@ struct ChatDock: View {
     static let panelSize = CGSize(width: 360, height: 560)
     static let morph = Animation.spring(response: 0.44, dampingFraction: 0.86)
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         GeometryReader { proxy in
             let open = chrome.chatFloating
@@ -198,9 +200,13 @@ struct ChatDock: View {
             .clipShape(shape)
             .glassEffect(.regular.interactive(!open), in: shape)
             .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
+            // Reduce Motion cross-fades between button and panel instead.
+            .id(reduceMotion ? open : false)
+            .transition(.opacity)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
-        .animation(chrome.chatMorphAnimated ? Self.morph : nil, value: chrome.chatFloating)
+        .animation(chrome.chatMorphAnimated ? (reduceMotion ? .easeInOut(duration: 0.2) : Self.morph) : nil,
+                   value: chrome.chatFloating)
         .tint(WikiTheme.foreground)
         .preferredColorScheme(.dark)
     }

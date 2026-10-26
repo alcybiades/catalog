@@ -76,8 +76,19 @@ enum WikiTheme {
         return familyExists(family) ? family : "Verdana"
     }
 
+    /// Installed families, built once (the list costs ~0.2 ms and every
+    /// block's font asks) and dropped when fonts are added or removed.
+    private static var installedFamilies: Set<String>?
+    private static let fontSetObserver = NotificationCenter.default.addObserver(
+        forName: NSFont.fontSetChangedNotification, object: nil, queue: .main
+    ) { _ in installedFamilies = nil }
+
     static func familyExists(_ family: String) -> Bool {
-        NSFontManager.shared.availableFontFamilies.contains(family)
+        _ = fontSetObserver
+        if let installedFamilies { return installedFamilies.contains(family) }
+        let families = Set(NSFontManager.shared.availableFontFamilies)
+        installedFamilies = families
+        return families.contains(family)
     }
 
     static func body(_ family: String, size: Double) -> Font {
