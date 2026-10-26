@@ -75,7 +75,7 @@ private final class MediaItem: NSCollectionViewItem {
     }
     func loadThumbnail(scale: CGFloat) {
         guard let url = representedURL else { return }
-        let pixels = ImageLoader.thumbnailPixels(points: 160, scale: scale)
+        let pixels = ImageLoader.thumbnailPixels(points: max(FilePreview.tileWidth, view.bounds.width), scale: scale)
         guard request == nil || loadedPixels != pixels else { return }
         request?.cancel()
         generation = UUID(); let token = generation
@@ -133,8 +133,8 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         super.init(frame: frame)
         wantsLayer = true
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 160, height: 156)
-        layout.minimumInteritemSpacing = 16
+        layout.itemSize = NSSize(width: FilePreview.tileWidth, height: 156)
+        layout.minimumInteritemSpacing = FilePreview.tileSpacing
         layout.minimumLineSpacing = 18
         layout.sectionInset = NSEdgeInsets(top: 8, left: 20, bottom: 24, right: 20)
         layout.headerReferenceSize = NSSize(width: 1, height: 34)
@@ -158,8 +158,26 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
     required init?(coder: NSCoder) { fatalError() }
     func applyTheme() { message.textColor = Theme.secondary }
     override var acceptsFirstResponder: Bool { true }
+    static let tileWidth: CGFloat = 160
+    static let tileSpacing: CGFloat = 4
+    /// Widens tiles so each row fills the gallery exactly. Flow layout would
+    /// otherwise pour the leftover width into the gaps between columns.
+    private func fitTiles() {
+        guard let layout = collection.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
+        let inset = layout.sectionInset.left + layout.sectionInset.right
+        let available = scroll.contentSize.width - inset
+        guard available > 0 else { return }
+        let spacing = FilePreview.tileSpacing
+        let columns = max(1, ((available + spacing) / (FilePreview.tileWidth + spacing)).rounded(.down))
+        let width = ((available - (columns - 1) * spacing) / columns).rounded(.down)
+        let size = NSSize(width: width, height: (width * 156 / 160).rounded())
+        guard layout.itemSize != size else { return }
+        layout.itemSize = size
+        layout.invalidateLayout()
+    }
     override func layout() {
         super.layout()
+        defer { fitTiles() }
         breadcrumbs.frame = NSRect(x: 24, y: bounds.height - 40, width: max(0, bounds.width - 48), height: 28)
         scroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 8))
         imageView.frame = imageFrame
