@@ -10,8 +10,10 @@ struct HomeView: View {
     @State private var query = ""
     @State private var appeared = false
     @State private var recentFiles: [URL] = []
+    @State private var actionsWidth: CGFloat = 0
+    @State private var suggestions: [String] = []
+    @State private var highlighted: Int?
     @FocusState private var searchFocused: Bool
-    @Namespace private var glass
 
     private var isLauncher: Bool { page.style == .home }
 
@@ -21,10 +23,22 @@ struct HomeView: View {
                 Spacer(minLength: PageMetrics.contentTop)
                 VStack(spacing: 30) {
                     masthead
-                    VStack(spacing: 14) {
-                        if isLauncher { launcherActions }
-                        searchField
+                    VStack(spacing: 20) {
+                        if isLauncher {
+                            launcherActions
+                                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { actionsWidth = $0 }
+                        }
+                        // Spans the action pills exactly, or a fixed column
+                        // on a Wikipedia tab.
+                        // Lays out at field height; the open suggestion list
+                        // draws over the content below rather than pushing it.
+                        Color.clear
+                            .frame(height: Self.fieldHeight)
+                            .overlay(alignment: .top) { searchField.fixedSize(horizontal: false, vertical: true) }
+                            .frame(width: isLauncher && actionsWidth > 0 ? actionsWidth : nil)
+                            .frame(maxWidth: isLauncher ? nil : 460)
                     }
+                    .zIndex(1)
                     shortcuts
                 }
                 .frame(maxWidth: 560)
@@ -53,12 +67,12 @@ struct HomeView: View {
     // MARK: Pieces
 
     private var masthead: some View {
-        VStack(spacing: 14) {
+        // Logo and wordmark on one line.
+        HStack(spacing: 14) {
             Image(systemName: isLauncher ? "text.book.closed.fill" : "book.closed.fill")
-                .font(.system(size: 38, weight: .regular))
+                .font(.system(size: 36, weight: .regular))
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
-                .padding(.bottom, 2)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
                 .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
@@ -71,58 +85,115 @@ struct HomeView: View {
 
     private var searchField: some View {
         let hasQuery = !query.trimmingCharacters(in: .whitespaces).isEmpty
-        return GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
-                    TextField("Search Wikipedia", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(WikiTheme.body(bodyFamily, size: 16))
-                        .foregroundStyle(WikiTheme.foreground)
-                        .focused($searchFocused)
-                        .autocorrectionDisabled()
-                        .onSubmit(go)
-                    if hasQuery {
-                        Button {
-                            query = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(WikiTheme.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.opacity.combined(with: .scale(0.6)))
-                        .accessibilityLabel("Clear")
+        let expanded = !suggestions.isEmpty
+        // Rounded like a capsule at field height; suggestions extend the
+        // same shape downward instead of floating as a separate card.
+        let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2, style: .continuous)
+        return VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
+                TextField("Search Wikipedia", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(WikiTheme.body(bodyFamily, size: 16))
+                    .foregroundStyle(WikiTheme.foreground)
+                    .focused($searchFocused)
+                    .autocorrectionDisabled()
+                    .onSubmit(go)
+                    .onKeyPress(.downArrow) { moveHighlight(1) }
+                    .onKeyPress(.upArrow) { moveHighlight(-1) }
+                    .onKeyPress(.escape) {
+                        guard !suggestions.isEmpty else { return .ignored }
+                        suggestions = []
+                        return .handled
                     }
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 40)
-                .background(WikiTheme.wash.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(WikiTheme.hairline, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: 10))
-                .onTapGesture { searchFocused = true }
-
                 if hasQuery {
-                    Button(action: go) {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 26, height: 26)
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(WikiTheme.secondary)
                     }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(WikiTheme.foreground.opacity(0.8))
-                    .glassEffectID("go", in: glass)
-                    .help("I’m Feeling Lucky")
-                    .accessibilityLabel("Go")
-                    .transition(.scale(0.5).combined(with: .opacity))
+                    .buttonStyle(.plain)
+                    .transition(.opacity.combined(with: .scale(0.6)))
+                    .accessibilityLabel("Clear")
                 }
             }
+            .padding(.horizontal, 16)
+            .frame(height: Self.fieldHeight)
+            .contentShape(Rectangle())
+            .onTapGesture { searchFocused = true }
+
+            if expanded {
+                Rectangle()
+                    .fill(WikiTheme.hairline)
+                    .frame(height: 1)
+                    .padding(.horizontal, 16)
+                suggestionRows
+            }
         }
+        .background(WikiTheme.background.opacity(expanded ? 0.85 : 0), in: shape)
+        .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(expanded ? 1 : 0))
+        .glassEffect(.regular.interactive(), in: shape)
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hasQuery)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.96)
+        .task(id: query) { await loadSuggestions() }
+    }
+
+    private static let fieldHeight: CGFloat = 42
+
+    /// Article titles starting with the query; ↑/↓ pick one, Return opens it.
+    private var suggestionRows: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(suggestions.enumerated()), id: \.element) { index, title in
+                Button { pick(title) } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(WikiTheme.secondary)
+                        Text(title)
+                            .font(WikiTheme.body(bodyFamily, size: 16))
+                            .foregroundStyle(WikiTheme.foreground)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .frame(height: 36)
+                    .background(index == highlighted ? WikiTheme.wash.opacity(0.08) : .clear)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { if $0 { highlighted = index } }
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.bottom, 4)
+    }
+
+    private func loadSuggestions() async {
+        let term = query.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else {
+            suggestions = []
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled else { return }
+        let titles = (try? await WikipediaClient.suggestions(for: term)) ?? []
+        guard !Task.isCancelled else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            suggestions = titles
+            highlighted = nil
+        }
+    }
+
+    private func moveHighlight(_ delta: Int) -> KeyPress.Result {
+        guard !suggestions.isEmpty else { return .ignored }
+        let next = (highlighted ?? -1) + delta
+        highlighted = next < 0 ? nil : min(next, suggestions.count - 1)
+        return .handled
     }
 
     /// The launcher's other starting points, above Wikipedia's search.
@@ -207,10 +278,20 @@ struct HomeView: View {
     }
 
     private func go() {
+        if let highlighted, suggestions.indices.contains(highlighted) {
+            pick(suggestions[highlighted])
+            return
+        }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        pick(trimmed)
+    }
+
+    private func pick(_ title: String) {
         searchFocused = false
-        page.open(trimmed)
+        suggestions = []
+        highlighted = nil
+        page.open(title)
         query = ""
     }
 }
