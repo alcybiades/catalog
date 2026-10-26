@@ -16,7 +16,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var scrollView: NSScrollView!
     private var tabBar: TabBarView!
     private var statusLabel: NSTextField!
-    private var statusPill: NSView!
+    private var statusPill: StatusPill!
     private let sidebarBackdrop = SidebarBackdrop()
     private let sidebar = FolderSidebar()
     private let divider = SidebarDivider()
@@ -42,7 +42,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var lastAutosave = Date()
 
     // Pages beyond files: Wikipedia tabs host SwiftUI under the tab strip,
-    // notes and images get the glass action cluster and title pill, and
+    // notes and images get the glass action cluster, and
     // the assistant floats in the lower-right corner or docks at the right.
     let chrome = WindowChrome()
     let agent = AgentSession()
@@ -50,7 +50,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let contentGuide = NSLayoutGuide()
     private var pageActions: PageHostingView<PageActionsView>!
     private var backButton: PageHostingView<WikiBackButton>!
-    private var titlePill: PageHostingView<WikiTitlePill>!
     private var chatHost: PageHostingView<ChatDock>!
     private let dockHint = ChatDockHint()
     private var chatTrailing: NSLayoutConstraint!
@@ -168,6 +167,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         statusLabel.font = Theme.interfaceFont(size: 11)
         statusLabel.textColor = Theme.secondary
         statusLabel.alignment = .right
+        statusLabel.lineBreakMode = .byTruncatingMiddle
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // A translucent backdrop-colored pill, softening text that passes
@@ -178,14 +179,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // then saturates a WindowServer core. Because WindowServer also
         // routes input, that starves event delivery too: trackpad scrolling
         // froze until the fingers lifted.
-        statusPill = NSView()
+        statusPill = StatusPill(label: statusLabel)
         statusPill.wantsLayer = true
         statusPill.layer?.backgroundColor = Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
         statusPill.layer?.cornerRadius = 7
         statusPill.layer?.cornerCurve = .continuous
         statusPill.layer?.masksToBounds = true
         statusPill.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.addSubview(statusLabel)
 
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         divider.translatesAutoresizingMaskIntoConstraints = false
@@ -249,9 +249,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         pageActions.sizingOptions = [.intrinsicContentSize]
         backButton = PageHostingView(rootView: WikiBackButton(chrome: chrome))
         backButton.sizingOptions = [.intrinsicContentSize]
-        titlePill = PageHostingView(rootView: WikiTitlePill(chrome: chrome))
-        titlePill.sizingOptions = [.intrinsicContentSize]
-        titlePill.passesThrough = true
         chatHost = PageHostingView(rootView: ChatDock(chrome: chrome, session: agent, actions: agentActions(docked: false)))
         chatHost.sizingOptions = []
         chatHost.hitRegion = { [weak self] view, point in
@@ -265,7 +262,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         agentHost.sizingOptions = []
         agentContainer.wantsLayer = true
         agentContainer.layer?.masksToBounds = true
-        for view in [pageGlass, pageActions!, backButton!, titlePill!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
+        for view in [pageGlass, pageActions!, backButton!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
         agentContainer.addSubview(agentHost)
@@ -282,7 +279,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         container.addSubview(pageGlass)
         container.addSubview(pageActions)
         container.addSubview(backButton)
-        container.addSubview(titlePill)
         container.addSubview(tabBar)
         container.addSubview(statusPill)
         container.addSubview(agentContainer)
@@ -326,16 +322,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             pageGlass.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             pageGlass.topAnchor.constraint(equalTo: container.topAnchor),
             pageGlass.heightAnchor.constraint(equalToConstant: PageMetrics.glassHeight),
-            // Contents and Share sit in the lower-left corner, level with
-            // the assistant button in the lower right.
+            // Contents and Share sit in the lower-left corner, mirroring the
+            // status pill in the lower right: same side inset, same bottom.
             pageActions.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: ChatDock.margin),
-            pageActions.bottomAnchor.constraint(equalTo: container.bottomAnchor,
-                                                constant: chatRest.bottom - (ChatDock.size - PageMetrics.control) / 2),
+            pageActions.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor),
             backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
-            titlePill.centerXAnchor.constraint(equalTo: contentGuide.centerXAnchor),
-            titlePill.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
-            titlePill.widthAnchor.constraint(lessThanOrEqualTo: contentGuide.widthAnchor, constant: -2 * (PageMetrics.control + 160)),
             tabBar.topAnchor.constraint(equalTo: container.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
@@ -354,7 +346,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             statusLabel.trailingAnchor.constraint(equalTo: statusPill.trailingAnchor, constant: -9),
             statusLabel.topAnchor.constraint(equalTo: statusPill.topAnchor, constant: 3),
             statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -3),
-            statusPill.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -20),
+            statusPill.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -ChatDock.margin),
+            statusPill.leadingAnchor.constraint(greaterThanOrEqualTo: pageActions.trailingAnchor, constant: 12),
             statusPill.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
             chatTrailing, chatBottom,
             dockHint.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
@@ -617,7 +610,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let isWiki = doc.kind == .wiki
         scrollView.isHidden = !editable
         preview.isHidden = editable || isWiki
-        statusPill.isHidden = !editable
         textView.isEditable = editable
         titleView.isEditable = editable
         showWikiHost(for: doc)
@@ -695,14 +687,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     private func updateStatus() {
+        window?.title = currentDocument.name
+        // A Wikipedia tab's status is its article's address, linking to it.
+        guard currentDocument.kind != .wiki else {
+            let url = currentDocument.wiki?.article?.url
+            statusPill.link = url
+            statusLabel.stringValue = url.map { ($0.host() ?? "") + $0.path(percentEncoded: false) } ?? ""
+            return
+        }
+        statusPill.link = nil
         let words = currentDocument.storage.string
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
         statusLabel.stringValue = "\(currentDocument.name) · \(words)w"
-        guard currentDocument.kind != .wiki else {
-            window?.title = currentDocument.name
-            return
-        }
-        window?.title = currentDocument.name
         if window?.firstResponder !== titleView {
             titleView.string = currentDocument.displayTitle
         }
@@ -1220,24 +1216,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         default: scrolled = false
         }
         pageGlass.setShowing(scrolled)
-        // Folders keep the gallery's fast path: no glass, no bar.
-        let hasBar = doc.kind == .markdown || doc.kind == .image || doc.kind == .wiki
-        pageActions.isHidden = !hasBar || viewing
+        // Folders keep the gallery's fast path: no glass, no bar. The home
+        // page has nothing to list or share.
+        let hasActions = doc.kind == .markdown || doc.kind == .image || doc.wiki?.route != nil
+        pageActions.isHidden = !hasActions || viewing
+        statusPill.isHidden = !(doc.kind == .markdown || doc.wiki?.article != nil) || viewing
         updateChatDock()
         backButton.isHidden = doc.wiki?.canGoBack != true || viewing
-        // The title pill appears once the page's own title is under the bar.
-        let title: String?
-        switch doc.kind {
-        case .markdown:
-            let titleScrolledAway = scrollView.contentView.bounds.origin.y > titleView.frame.maxY - PageMetrics.barTop
-            title = titleScrolledAway ? doc.displayTitle : nil
-        case .wiki:
-            title = doc.wiki?.showsTitle == true && !viewing ? doc.wiki?.article?.title : nil
-        default:
-            title = nil
-        }
-        if let title, chrome.title != title { chrome.title = title }
-        titlePill.isHidden = title == nil
     }
 
     /// Contents and Share for the page on screen.
@@ -1667,5 +1652,72 @@ extension EditorWindowController: NSMenuItemValidation {
         default:
             return true
         }
+    }
+}
+
+/// The status line's pill. Given a link (a Wikipedia tab's article), it
+/// opens it in the default browser; its text brightens on hover.
+final class StatusPill: NSView {
+    private let label: NSTextField
+    private var hovered = false {
+        didSet { if hovered != oldValue { label.textColor = hovered ? Theme.foreground : Theme.secondary } }
+    }
+
+    var link: URL? {
+        didSet {
+            guard link != oldValue else { return }
+            hovered = false
+            toolTip = link == nil ? nil : "Open in Browser"
+            setAccessibilityElement(link != nil)
+            setAccessibilityRole(link == nil ? nil : .link)
+            setAccessibilityLabel(link.map { "Open \($0.absoluteString) in browser" })
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    init(label: NSTextField) {
+        self.label = label
+        super.init(frame: .zero)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var mouseDownCanMoveWindow: Bool { link == nil }
+
+    /// Clicks on the label land on the pill.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit == nil || link == nil ? hit : self
+    }
+
+    override func resetCursorRects() {
+        if link != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = link != nil }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    override func mouseDown(with event: NSEvent) {
+        if link == nil { super.mouseDown(with: event) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let link else { return super.mouseUp(with: event) }
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { NSWorkspace.shared.open(link) }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let link else { return false }
+        return NSWorkspace.shared.open(link)
     }
 }
