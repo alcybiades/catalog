@@ -20,8 +20,6 @@ Articles render natively, including infoboxes, figures, tables, and math.
 They open as ordinary tabs, and the assistant can work from them and write
 what it finds into your notes.
 
-### Reference Wikipedia alongside your files
-
 ![Wikipedia articles next to a project folder](docs/3.png)
 
 Wikipedia pages open as tabs next to your notes and images. Drag any tab out
