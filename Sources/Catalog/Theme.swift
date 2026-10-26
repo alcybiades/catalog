@@ -47,19 +47,32 @@ struct SyntaxColors {
     }
 }
 
-/// The app's color themes. Plasma, the original, tints a background blur;
-/// the others are opaque.
+/// The app's color themes. Plasma, the original, and the Glass themes tint
+/// a background blur; the others are opaque.
 enum ThemeKind: String, CaseIterable {
-    case plasma, dark, light, paper
+    case plasma, dark, darkGlass, light, lightGlass, paper
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .darkGlass: return "Dark Glass"
+        case .lightGlass: return "Light Glass"
+        default: return rawValue.capitalized
+        }
+    }
+
+    /// Parses a `--theme` value, ignoring case and separators ("dark-glass").
+    init?(argument: String) {
+        let name = argument.lowercased().filter(\.isLetter)
+        guard let kind = Self.allCases.first(where: { $0.rawValue.lowercased() == name }) else { return nil }
+        self = kind
+    }
 
     /// The defaults key for this theme's override of a semantic color.
     /// Plasma keeps the original unprefixed keys.
     func key(_ name: String) -> String { self == .plasma ? name : "\(rawValue).\(name)" }
 
     static var current: ThemeKind {
-        get { AppState.defaults.string(forKey: "theme").flatMap(ThemeKind.init) ?? .plasma }
+        get { AppState.defaults.string(forKey: "theme").flatMap(ThemeKind.init(rawValue:)) ?? .plasma }
         set {
             AppState.defaults.set(newValue.rawValue, forKey: "theme")
             ThemeStore.shared.reload()
@@ -116,7 +129,9 @@ struct Palette {
         switch kind {
         case .plasma: return plasma
         case .dark: return dark
+        case .darkGlass: return darkGlass
         case .light: return light
+        case .lightGlass: return lightGlass
         case .paper: return paper
         }
     }
@@ -163,6 +178,15 @@ struct Palette {
         inlineCode: NSColor(hex: 0xE6B98C), listMarker: NSColor(hex: 0x9B9B9B),
         quote: NSColor(hex: 0xB4B4B4), link: NSColor(hex: 0x7CB2F2))
 
+    /// Dark's colors over Plasma's translucent blur.
+    static let darkGlass: Palette = {
+        var palette = dark
+        palette.backgroundOpacity = plasma.backgroundOpacity
+        palette.blurRadius = plasma.blurRadius
+        palette.codeBlockBackground = NSColor.black.withAlphaComponent(0.2)
+        return palette
+    }()
+
     /// White surfaces, near-black text, gray secondary text.
     static let light = Palette(
         isDark: false,
@@ -183,6 +207,15 @@ struct Palette {
         bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x0D0D0D), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xB0412E), listMarker: NSColor(hex: 0x8F8F8F),
         quote: NSColor(hex: 0x5D5D5D), link: NSColor(hex: 0x1F62D0))
+
+    /// Light's colors over Plasma's blur, tinted denser to stay legible.
+    static let lightGlass: Palette = {
+        var palette = light
+        palette.backgroundOpacity = 0.72
+        palette.blurRadius = plasma.blurRadius
+        palette.codeBlockBackground = NSColor.black.withAlphaComponent(0.04)
+        return palette
+    }()
 
     /// Cream paper, near-black ink, and muted earthy accents.
     static let paper = Palette(

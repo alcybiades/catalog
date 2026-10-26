@@ -27,9 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
             AgentBackend.preferred = backend
         }
-        // Scripting: `--theme plasma|dark|light|paper`.
+        // Scripting: `--theme plasma|dark|dark-glass|light|light-glass|paper`.
         if let index = CommandLine.arguments.firstIndex(of: "--theme"), CommandLine.arguments.indices.contains(index + 1),
-           let kind = ThemeKind(rawValue: CommandLine.arguments[index + 1].lowercased()) {
+           let kind = ThemeKind(argument: CommandLine.arguments[index + 1]) {
             ThemeKind.current = kind
         }
         buildMainMenu()
