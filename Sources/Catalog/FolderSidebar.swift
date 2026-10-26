@@ -50,6 +50,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         addSubview(scroll)
         outline.contextMenu = { [weak self] in self?.contextMenu() }
         scroll.contextMenu = { [weak self] in self?.contextMenu() }
+        NotificationCenter.default.addObserver(self, selector: #selector(workspaceChanged(_:)), name: Workspace.didChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
@@ -99,7 +100,53 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         if sameRoot, let selected { select(selected) }
         updateRootActions()
     }
-    @objc func refresh() { if let url = root?.url { setRoot(url); onRefresh?() } }
+    /// The workspace watcher applies filesystem changes as they happen, so
+    /// window activation and post-operation nudges have nothing to rescan.
+    @objc func refresh() {}
+    /// Explicit "Refresh Folder": re-list every loaded directory and rescan
+    /// anything else showing this workspace.
+    @objc private func reloadFolder() {
+        guard let root else { return }
+        Workspace.Change(root: Workspace.canonicalPath(root.url), directories: nil).post()
+        onRefresh?()
+    }
+    @objc private func workspaceChanged(_ notification: Notification) {
+        guard let change = notification.userInfo?["change"] as? Workspace.Change, let root,
+              change.root == Workspace.canonicalPath(root.url) else { return }
+        apply(change)
+    }
+    /// Updates changed directories in place, so expansion, selection and
+    /// scroll position survive.
+    private func apply(_ change: Workspace.Change) {
+        guard let root else { return }
+        // Listed children are already canonical; only the root's own
+        // spelling may differ (e.g. /var vs /private/var).
+        let prefix = root.url.path + "/"
+        func path(_ node: FileNode) -> String {
+            if node === root { return change.root }
+            return node.url.path.hasPrefix(prefix) ? change.root + "/" + node.url.path.dropFirst(prefix.count) : node.url.path
+        }
+        var stale: [FileNode] = []
+        func visit(_ node: FileNode) {
+            guard let loaded = node.loadedChildren else { return }
+            if change.affects(path: path(node)) { stale.append(node) }
+            loaded.forEach(visit)
+        }
+        visit(root)
+        guard !stale.isEmpty else { return }
+        for node in stale {
+            guard outline.row(forItem: node) >= 0, outline.isItemExpanded(node) else { node.invalidate(); continue }
+            let before = children(node).map(\.url.path)
+            node.reloadChildren()
+            for step in children(node).map(\.url.path).difference(from: before) {
+                switch step {
+                case .remove(let offset, _, _): outline.removeItems(at: [offset], inParent: node, withAnimation: [])
+                case .insert(let offset, _, _): outline.insertItems(at: [offset], inParent: node, withAnimation: [])
+                }
+            }
+        }
+        updateRootActions()
+    }
     func refreshFont() {
         outline.reloadData()
         updateRootActions()
@@ -121,7 +168,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
             }
             menu.addItem(.separator())
         }
-        menu.addItem(withTitle: "Refresh Folder", action: #selector(refresh), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Refresh Folder", action: #selector(reloadFolder), keyEquivalent: "").target = self
         return menu
     }
     @objc private func newFolder(_ sender: Any?) { promptForItem(.folder, sender: sender) }
@@ -145,7 +192,10 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
             guard response == .alertFirstButtonReturn, let self else { return }
             do {
                 let url = try kind.create(named: field.stringValue, in: directory)
-                self.refresh()
+                // Reveal it now rather than after the watcher's report.
+                if let root = self.root {
+                    self.apply(Workspace.Change(root: Workspace.canonicalPath(root.url), directories: [Workspace.canonicalPath(directory)]))
+                }
                 self.reveal(url)
                 if kind != .folder { self.onOpen?(url, false) }
             } catch {
@@ -197,13 +247,23 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? FileNode else { return nil }
+        let isRoot = node === root
+        let identifier = NSUserInterfaceItemIdentifier(isRoot ? "root" : "file")
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? SidebarFileCell ?? makeCell(identifier, isRoot: isRoot)
+        cell.imageView?.image = NSImage(systemSymbolName: node.isDirectory ? "folder" : (FileKind.classify(node.url) == .image ? "photo" : "doc"), accessibilityDescription: nil)
+        cell.imageView?.contentTintColor = node.isDirectory ? (Theme.heading ?? Theme.foreground) : Theme.secondary
+        cell.textField?.stringValue = node.url.lastPathComponent
+        cell.textField?.font = Theme.interfaceFont(size: 13.5)
+        cell.textField?.textColor = Theme.foreground.withAlphaComponent(0.85)
+        cell.toolTip = node.url.path
+        if isRoot { cell.showsActions = !mediaMode && outline.isItemExpanded(node) }
+        return cell
+    }
+    private func makeCell(_ identifier: NSUserInterfaceItemIdentifier, isRoot: Bool) -> SidebarFileCell {
         let cell = SidebarFileCell()
+        cell.identifier = identifier
         let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: node.isDirectory ? "folder" : (FileKind.classify(node.url) == .image ? "photo" : "doc"), accessibilityDescription: nil)
-        icon.contentTintColor = node.isDirectory ? (Theme.heading ?? Theme.foreground) : Theme.secondary
-        let label = NSTextField(labelWithString: node.url.lastPathComponent)
-        label.font = Theme.interfaceFont(size: 13.5)
-        label.textColor = Theme.foreground.withAlphaComponent(0.85)
+        let label = NSTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingMiddle
         cell.addSubview(icon); cell.addSubview(label)
         icon.translatesAutoresizingMaskIntoConstraints = false; label.translatesAutoresizingMaskIntoConstraints = false
@@ -213,13 +273,10 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
             label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
             label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
-        cell.textField = label; cell.imageView = icon; cell.toolTip = node.url.path
+        cell.textField = label; cell.imageView = icon
         cell.labelTrailing = label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4)
         cell.labelTrailing?.isActive = true
-        if node === root {
-            cell.addActions(target: self, folderAction: #selector(newFolder(_:)), markdownAction: #selector(newMarkdown(_:)))
-            cell.showsActions = !mediaMode && outline.isItemExpanded(node)
-        }
+        if isRoot { cell.addActions(target: self, folderAction: #selector(newFolder(_:)), markdownAction: #selector(newMarkdown(_:))) }
         return cell
     }
     @objc private func clicked() {

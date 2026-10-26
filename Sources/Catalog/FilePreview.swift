@@ -123,6 +123,7 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
     private var galleryPositions: [String: NSPoint] = [:]
     private var loadID = UUID()
     private var scan: BlockOperation?
+    private var restoresPosition = false
     private var originalRequest: ImageRequest?
     private var gallerySymbols: GallerySymbols?
     private let scanQueue: OperationQueue = {
@@ -152,6 +153,7 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         applyTheme()
         breadcrumbs.onNavigate = { [weak self] url in self?.onNavigate?(url) }
         [scroll, imageView, message, breadcrumbs].forEach(addSubview)
+        NotificationCenter.default.addObserver(self, selector: #selector(workspaceChanged(_:)), name: Workspace.didChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
     func applyTheme() { message.textColor = Theme.secondary }
@@ -183,6 +185,10 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         loadID = UUID()
     }
     func show(_ doc: Document, root: URL? = nil, mediaMode: Bool = false, from origin: NSRect? = nil) {
+        // Chrome refreshes re-show the current gallery constantly; only the
+        // workspace watcher's reports should rescan it.
+        if doc.kind == .folder, let url = doc.url, url.standardizedFileURL == galleryURL?.standardizedFileURL,
+           root == breadcrumbRoot { return }
         suspend()
         let token = loadID
         breadcrumbRoot = root
@@ -200,32 +206,8 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
             sections = []
             collection.reloadData()
             message.stringValue = "Loading images…"; message.isHidden = false
-            let operation = BlockOperation()
-            operation.addExecutionBlock { [weak self, weak operation] in
-                guard operation?.isCancelled == false else { return }
-                let symbols = GallerySymbols.shared
-                let result = Result { try MediaGallery.sections(in: url, cancelled: { operation?.isCancelled != false }) }
-                guard operation?.isCancelled == false else { return }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.loadID == token else { return }
-                    self.gallerySymbols = symbols
-                    switch result {
-                    case .success(let sections):
-                        self.sections = sections
-                        self.message.stringValue = "No images in this folder or its subfolders"
-                    case .failure:
-                        self.sections = []
-                        self.message.stringValue = "This folder could not be read"
-                    }
-                    self.message.isHidden = !self.sections.isEmpty
-                    self.collection.reloadData()
-                    self.collection.selectionIndexPaths = []
-                    self.collection.layoutSubtreeIfNeeded()
-                    self.scroll.contentView.scroll(to: self.galleryPositions[url.path] ?? .zero)
-                    self.scroll.reflectScrolledClipView(self.scroll.contentView)
-                }
-            }
-            scan = operation; scanQueue.addOperation(operation)
+            restoresPosition = true
+            scanGallery(url)
         } else if doc.kind == .image {
             message.stringValue = "Loading image…"; message.isHidden = false
             originalRequest = ImageLoader.shared.original(url) { [weak self] image in
@@ -246,6 +228,43 @@ final class FilePreview: NSView, NSCollectionViewDataSource, NSCollectionViewDel
             message.stringValue = "Rendering not yet supported"
             message.isHidden = false
         }
+    }
+    /// Scans in the background. A first scan restores the saved position;
+    /// a rescan swaps sections in only when they differ, without a flash.
+    private func scanGallery(_ url: URL) {
+        let token = loadID
+        scan?.cancel()
+        let operation = BlockOperation()
+        operation.addExecutionBlock { [weak self, weak operation] in
+            guard operation?.isCancelled == false else { return }
+            let symbols = GallerySymbols.shared
+            let result = Result { try MediaGallery.sections(in: url, cancelled: { operation?.isCancelled != false }) }
+            guard operation?.isCancelled == false else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.loadID == token else { return }
+                self.gallerySymbols = symbols
+                let sections = (try? result.get()) ?? []
+                let text = (try? result.get()) == nil ? "This folder could not be read" : "No images in this folder or its subfolders"
+                guard self.restoresPosition || sections != self.sections || text != self.message.stringValue else { return }
+                self.sections = sections
+                self.message.stringValue = text
+                self.message.isHidden = !sections.isEmpty
+                self.collection.reloadData()
+                self.collection.selectionIndexPaths = []
+                self.collection.layoutSubtreeIfNeeded()
+                if self.restoresPosition {
+                    self.restoresPosition = false
+                    self.scroll.contentView.scroll(to: self.galleryPositions[url.path] ?? .zero)
+                }
+                self.scroll.reflectScrolledClipView(self.scroll.contentView)
+            }
+        }
+        scan = operation; scanQueue.addOperation(operation)
+    }
+    @objc private func workspaceChanged(_ notification: Notification) {
+        guard let galleryURL, let change = notification.userInfo?["change"] as? Workspace.Change,
+              change.affects(path: Workspace.canonicalPath(galleryURL), includingDescendants: true) else { return }
+        scanGallery(galleryURL)
     }
     func numberOfSections(in collectionView: NSCollectionView) -> Int { sections.count }
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { sections[section].images.count }
