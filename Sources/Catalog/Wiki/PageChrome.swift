@@ -34,7 +34,7 @@ enum ShareSpec {
 }
 
 /// Window-wide state the SwiftUI chrome reads: whether the assistant panel
-/// is open, and the current page's title, outline, and share items.
+/// is open, and the current page's outline and share items.
 @MainActor @Observable
 final class WindowChrome {
     /// Where the assistant is: tucked into its button, floating above the
@@ -52,8 +52,6 @@ final class WindowChrome {
     var hasOutline = true
     /// The Wikipedia page on screen, if any, for its Back button.
     var page: WikiPage?
-    /// The page's title, shown in the bar's pill once its heading scrolls away.
-    var title = ""
 
     @ObservationIgnored var toggleChat: () -> Void = {}
     @ObservationIgnored var jump: (OutlineEntry?) -> Void = { _ in }
@@ -318,8 +316,6 @@ final class PageGlassBackdrop: NSView, ThemeRefreshing {
 /// Hosts SwiftUI inside the AppKit window without letting it claim the
 /// titlebar safe area or bridge into the window's (shape-only) toolbar.
 final class PageHostingView<Content: View>: NSHostingView<Content> {
-    /// Click-through views never take mouse events (the glass overlay).
-    var passesThrough = false
     /// Limits clicks to part of the view, in its own coordinates.
     var hitRegion: ((NSView, NSPoint) -> Bool)?
 
@@ -332,7 +328,6 @@ final class PageHostingView<Content: View>: NSHostingView<Content> {
     @MainActor required dynamic init?(coder: NSCoder) { fatalError() }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if passesThrough { return nil }
         if let hitRegion, let superview, !hitRegion(self, convert(point, from: superview)) { return nil }
         return super.hitTest(point)
     }
@@ -343,8 +338,8 @@ final class PageHostingView<Content: View>: NSHostingView<Content> {
 // MARK: - Wikipedia tab
 
 /// The root of a Wikipedia (or home) tab: the page and its full-window
-/// image viewer. Its bar (Back, title, actions) lives above the window's
-/// glass, in `WikiBackButton`, `WikiTitlePill`, and `PageActionsView`.
+/// image viewer. Its controls (Back, actions) live above the window's
+/// glass, in `WikiBackButton` and `PageActionsView`.
 struct WikiTabView: View {
     let page: WikiPage
 
@@ -395,23 +390,5 @@ struct WikiBackButton: View {
         .help("Back (⌘[)")
         .preferredColorScheme(WikiTheme.colorScheme)
         .fixedSize()
-    }
-}
-
-/// The page's title, centered in the bar once its heading scrolls away.
-struct WikiTitlePill: View {
-    let chrome: WindowChrome
-
-    var body: some View {
-        Text(chrome.title)
-            .font(WikiTheme.interface(size: 14, weight: .semibold))
-            .foregroundStyle(WikiTheme.heading)
-            .lineLimit(1)
-            .padding(.horizontal, 16)
-            .frame(height: PageMetrics.control)
-            .glassEffect(.regular, in: Capsule())
-            .frame(maxWidth: 420)
-            .preferredColorScheme(WikiTheme.colorScheme)
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
