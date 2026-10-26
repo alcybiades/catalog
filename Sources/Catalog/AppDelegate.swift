@@ -77,7 +77,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let title = value(after: "--wiki") { keyController?.openArticle(title) }
         // `--move-tab` runs Move Tab to New Window on the current tab.
         if args.contains("--move-tab"), let source = keyController { moveTab(from: source, at: source.current) }
-        if args.contains("--assistant") || value(after: "--ask") != nil { controllers.forEach { $0.setAgentOpen(true) } }
+        // Showcase staging: `--frame x,y,w,h` in points from the primary
+        // screen's top-left, `--media` for the open folder's media view,
+        // `--transcript file.json` for a canned conversation (test mode only),
+        // and `--assistant-docked` for the docked rather than floating panel.
+        if let parts = value(after: "--frame")?.split(separator: ",").compactMap({ Double($0) }), parts.count == 4,
+           let window = keyController?.window, let screen = NSScreen.screens.first {
+            window.setFrame(NSRect(x: parts[0], y: screen.frame.maxY - parts[1] - parts[3], width: parts[2], height: parts[3]), display: true)
+        }
+        if args.contains("--media"), let controller = keyController, let root = controller.workspace?.root {
+            controller.restoreWorkspace(root: root, collapsed: false, width: controller.sidebarWidth, media: true)
+        }
+        if let path = value(after: "--transcript") { AgentStore.shared.current.loadTranscript(URL(fileURLWithPath: path)) }
+        if args.contains("--assistant") || args.contains("--assistant-docked") || value(after: "--ask") != nil || value(after: "--transcript") != nil {
+            controllers.forEach { $0.setAgentOpen(true, docked: args.contains("--assistant-docked")) }
+        }
         if let offset = value(after: "--scroll").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.scrollPage(to: CGFloat(offset)) }
         }
@@ -126,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme", "--frame", "--transcript"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).
@@ -135,8 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return Set(args.indices.dropLast().filter { valueFlags.contains(args[$0]) }.map { args[$0 + 1] })
     }()
 
+    /// Paths given on the command line, which launch already opens; AppKit
+    /// delivers each once more here, which would open a second window.
+    private var launchPaths = Set(CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+        .map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        if Self.flagValues.contains(filename) { return true }
+        if Self.flagValues.contains(filename) || launchPaths.remove(URL(fileURLWithPath: filename).standardizedFileURL.path) != nil { return true }
         let controller = keyController ?? makeWindow()
         return controller.open(url: URL(fileURLWithPath: filename))
     }

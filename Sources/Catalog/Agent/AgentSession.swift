@@ -193,6 +193,20 @@ final class AgentConversation: Identifiable {
         self.backend = backend
     }
 
+    /// Scripting (test mode only): shows a canned exchange, as JSON
+    /// `[{"role": "user"|"assistant"|"tool", "text", "detail"?, "url"?}]`
+    /// (a `url` path is relative to the JSON file),
+    /// without calling a model.
+    func loadTranscript(_ url: URL) {
+        guard AppState.isTesting, let data = try? Data(contentsOf: url),
+              let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return }
+        let kinds: [String: Item.Kind] = ["user": .user, "assistant": .assistant, "tool": .tool, "error": .error]
+        items = entries.compactMap { entry in
+            guard let kind = entry["role"].flatMap({ kinds[$0] }), let text = entry["text"] else { return nil }
+            return Item(kind: kind, text: text, detail: entry["detail"], url: entry["url"].map { URL(fileURLWithPath: $0, relativeTo: url.deletingLastPathComponent()).absoluteURL })
+        }
+    }
+
     var title: String {
         guard let first = items.first(where: { $0.kind == .user })?.text else { return "New conversation" }
         let line = first.split(separator: "\n").first.map(String.init) ?? first
