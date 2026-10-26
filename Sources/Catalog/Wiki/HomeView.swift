@@ -204,7 +204,7 @@ struct HomeView: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(PressableStyle())
-                    .background(Color.white.opacity(0.05), in: Capsule())
+                    .background(WikiTheme.wash.opacity(0.05), in: Capsule())
                     .overlay(Capsule().strokeBorder(WikiTheme.hairline, lineWidth: 1))
                     .help(item.id)
                     .contextMenu {

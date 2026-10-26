@@ -22,6 +22,11 @@ final class SelectionToolbar {
         buildContent()
     }
 
+    /// Rebuilds the bar in the current palette.
+    func applyTheme() {
+        buildContent()
+    }
+
     private func buildContent() {
         let content = NSView()
         content.wantsLayer = true
@@ -29,7 +34,7 @@ final class SelectionToolbar {
         content.layer?.cornerRadius = 10
         content.layer?.cornerCurve = .continuous
         content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        content.layer?.borderColor = Theme.wash.withAlphaComponent(0.08).cgColor
 
         var views: [NSView] = []
         views.append(ToolbarIconButton(symbolName: "bold", fallback: "B", toolTip: "Bold") { [weak self] in
@@ -49,7 +54,7 @@ final class SelectionToolbar {
 
         let divider = NSView()
         divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        divider.layer?.backgroundColor = Theme.wash.withAlphaComponent(0.12).cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
         divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
         divider.heightAnchor.constraint(equalToConstant: 16).isActive = true
@@ -243,7 +248,7 @@ private final class ColorDotButton: NSView {
         color.setFill()
         NSBezierPath(ovalIn: dot).fill()
         if hovered {
-            NSColor.white.withAlphaComponent(0.7).setStroke()
+            Theme.wash.withAlphaComponent(0.7).setStroke()
             let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
             ring.lineWidth = 1.5
             ring.stroke()

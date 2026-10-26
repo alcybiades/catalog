@@ -164,16 +164,21 @@ final class EditorTextView: NSTextView {
         isIncrementalSearchingEnabled = true
         smartInsertDeleteEnabled = false
 
-        insertionPointColor = Theme.cursor
-        selectedTextAttributes = [
-            .backgroundColor: Theme.selection,
-            .foregroundColor: NSColor(hex: 0xF8FAFC),
-        ]
-        typingAttributes = Theme.baseAttributes
+        applyTheme()
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(selectionChanged),
             name: NSTextView.didChangeSelectionNotification, object: self)
+    }
+
+    /// The caret and selection colors; the text itself follows on rehighlight.
+    func applyTheme() {
+        insertionPointColor = Theme.cursor
+        selectedTextAttributes = [
+            .backgroundColor: Theme.selection,
+            .foregroundColor: Theme.palette.selectedText,
+        ]
+        typingAttributes = Theme.baseAttributes
     }
 
     /// Supplies the current document's directory so relative image paths

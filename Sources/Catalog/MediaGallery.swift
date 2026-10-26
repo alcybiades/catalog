@@ -54,7 +54,7 @@ enum MediaGallery {
 }
 
 /// Compact clickable path, horizontally scrollable for deeply nested folders.
-final class BreadcrumbBar: NSView {
+final class BreadcrumbBar: NSView, ThemeRefreshing {
     var onNavigate: ((URL) -> Void)?
     private let scroll = NSScrollView()
     private let content = NSView()
@@ -118,6 +118,13 @@ final class BreadcrumbBar: NSView {
         if revealEnd, let last = content.subviews.last {
             last.scrollToVisible(last.bounds)
             revealEnd = false
+        }
+    }
+    func applyTheme() {
+        for view in content.subviews {
+            if let button = view as? NSButton { button.contentTintColor = Theme.secondary }
+            else if let label = view as? NSTextField { label.textColor = Theme.heading ?? Theme.foreground }
+            else if let separator = view as? NSImageView { separator.contentTintColor = Theme.secondary }
         }
     }
     @objc private func navigate(_ sender: NSButton) {

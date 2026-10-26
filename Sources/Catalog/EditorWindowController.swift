@@ -134,12 +134,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Single visual line: a huge fixed container width, clipped by frame.
         titleView.textContainer?.widthTracksTextView = false
         titleView.textContainer?.size = NSSize(width: 10000, height: 10000)
-        titleView.textColor = Theme.secondary
-        titleView.insertionPointColor = Theme.cursor
-        titleView.selectedTextAttributes = [
-            .backgroundColor: Theme.selection,
-            .foregroundColor: NSColor(hex: 0xF8FAFC),
-        ]
         titleView.delegate = self
         textView.addSubview(titleView)
 
@@ -147,7 +141,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .overlay
-        scrollView.verticalScroller?.knobStyle = .light
         scrollView.documentView = textView
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         // Notes scroll up under the tab strip and the glass; keep the
@@ -166,7 +159,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = Theme.interfaceFont(size: 11)
-        statusLabel.textColor = Theme.secondary
         statusLabel.alignment = .right
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -180,7 +172,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // froze until the fingers lifted.
         statusPill = NSView()
         statusPill.wantsLayer = true
-        statusPill.layer?.backgroundColor = Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
         statusPill.layer?.cornerRadius = 7
         statusPill.layer?.cornerCurve = .continuous
         statusPill.layer?.masksToBounds = true
@@ -391,8 +382,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         NotificationCenter.default.addObserver(
             self, selector: #selector(agentWillModifyFile(_:)), name: .agentWillModifyFile, object: nil)
         NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(
             self, selector: #selector(agentDidModifyFiles(_:)), name: .agentDidModifyFiles, object: nil)
 
+        applyTheme()
         updateSidebar()
         updateAgentPanel()
         textView.rehighlight()
@@ -474,6 +468,32 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         )
     }
 
+    /// Colors this controller sets on plain AppKit views.
+    private func applyTheme() {
+        titleView.textColor = Theme.secondary
+        titleView.insertionPointColor = Theme.cursor
+        titleView.selectedTextAttributes = [
+            .backgroundColor: Theme.selection,
+            .foregroundColor: Theme.palette.selectedText,
+        ]
+        statusLabel.textColor = Theme.secondary
+        statusPill.layer?.backgroundColor = Theme.background.withAlphaComponent(Theme.backgroundOpacity).cgColor
+        scrollView.verticalScroller?.knobStyle = Theme.palette.isDark ? .light : .dark
+    }
+
+    /// Live theme switch: the window, its views, and the open note's text.
+    /// SwiftUI pages follow the palette on their own.
+    @objc private func themeDidChange() {
+        guard let window else { return }
+        applyThemeBackdrop(to: window)
+        applyTheme()
+        textView.applyTheme()
+        selectionToolbar.applyTheme()
+        window.contentView?.refreshTheme()
+        textView.rehighlight()
+        refreshChrome()
+    }
+
     func applyFontChange() {
         textView.rehighlight()
         statusLabel.font = Theme.interfaceFont(size: 11)
@@ -534,7 +554,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             menu.addItem(item)
         }
-        menu.appearance = NSAppearance(named: .darkAqua)
+        menu.appearance = Theme.palette.appearance
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.isFlipped ? anchor.bounds.maxY + 6 : -6), in: anchor)
     }
 

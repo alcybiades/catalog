@@ -1,7 +1,7 @@
 import AppKit
 import QuartzCore
 
-final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, ThemeRefreshing {
     var onRefresh: (() -> Void)?
     var onOpen: ((URL, Bool) -> Void)?
     var onToggleSidebar: (() -> Void)?
@@ -65,12 +65,17 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     func fadeInContents() {
         SidebarTransition.fadeIn([filesButton, mediaButton, scroll])
     }
+    func applyTheme() {
+        refreshControls()
+        outline.reloadData()
+        updateRootActions()
+    }
     private func refreshControls() {
         toggle.contentTintColor = Theme.secondary
         filesButton.contentTintColor = mediaMode ? Theme.secondary : Theme.foreground
         mediaButton.contentTintColor = mediaMode ? Theme.foreground : Theme.secondary
-        filesButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(mediaMode ? 0 : 0.08).cgColor
-        mediaButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(mediaMode ? 0.08 : 0).cgColor
+        filesButton.layer?.backgroundColor = Theme.wash.withAlphaComponent(mediaMode ? 0 : 0.08).cgColor
+        mediaButton.layer?.backgroundColor = Theme.wash.withAlphaComponent(mediaMode ? 0.08 : 0).cgColor
         [toggle, filesButton, mediaButton].forEach { $0.needsDisplay = true }
     }
     @objc private func collapse() { onToggleSidebar?() }
@@ -226,7 +231,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
 }
 
 /// Only this backdrop changes width. All interactive views use their final layout.
-final class SidebarBackdrop: NSView {
+final class SidebarBackdrop: NSView, ThemeRefreshing {
     private let fill = CALayer()
     private let boundary = CALayer()
     override init(frame: NSRect) {
@@ -234,14 +239,21 @@ final class SidebarBackdrop: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
         fill.anchorPoint = .zero
-        fill.backgroundColor = NSColor.black.withAlphaComponent(0.10).cgColor
-        boundary.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+        applyTheme()
         fill.addSublayer(boundary)
         layer?.addSublayer(fill)
         autoresizingMask = [.height]
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func applyTheme() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.backgroundColor = Theme.palette.sidebarFill.cgColor
+        boundary.backgroundColor = Theme.wash.withAlphaComponent(0.07).cgColor
+        CATransaction.commit()
+    }
 
     func configure(expanded: Bool, width: CGFloat, height: CGFloat, animated: Bool) {
         let interruptedWidth = fill.animation(forKey: "reveal") != nil ? fill.presentation()?.frame.maxX : nil
