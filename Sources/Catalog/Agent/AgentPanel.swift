@@ -227,7 +227,9 @@ struct AgentPanel: View {
     // MARK: Input
 
     private var input: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Floating, the footer row shares the corner with the minimize
+        // button, so give the field more room above them.
+        VStack(alignment: .leading, spacing: style == .floating ? 14 : 6) {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Ask, or ask for changes…", text: $session.draft, axis: .vertical)
                     .textFieldStyle(.plain)
