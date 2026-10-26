@@ -76,7 +76,6 @@ struct AgentPanel: View {
             }
             if style == .floating {
                 iconButton("sidebar.right", help: "Dock to the Side", action: actions.toggleDocked)
-                iconButton("arrow.down.right.and.arrow.up.left", help: "Minimize (⌘J)", action: actions.close)
             } else {
                 iconButton("rectangle.inset.bottomright.filled", help: "Float", action: actions.toggleDocked)
                 iconButton("sidebar.right", help: "Hide Assistant (⌘J)", action: actions.close)
@@ -254,10 +253,6 @@ struct AgentPanel: View {
             HStack(spacing: 6) {
                 ModelPicker(session: session)
                 Spacer(minLength: 4)
-                Label((session.workingDirectory.path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .help("The assistant can create and edit files here")
             }
             .font(WikiTheme.interface(size: 10.5))
             .foregroundStyle(WikiTheme.dim)
@@ -265,7 +260,18 @@ struct AgentPanel: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 12)
+        // Floating, the footer row sits level with the minimize button.
+        .padding(.bottom, style == .floating ? 19 : 12)
+        .overlay(alignment: .bottomTrailing) {
+            if style == .floating { minimizeButton }
+        }
+    }
+
+    /// In the panel's lower-right corner, centered where the assistant
+    /// button was, so opening and minimizing can be clicked in one spot.
+    private var minimizeButton: some View {
+        iconButton("arrow.down.right.and.arrow.up.left", help: "Minimize (⌘J)", action: actions.close)
+            .padding((ChatDock.size - 30) / 2)
     }
 
     @ViewBuilder
