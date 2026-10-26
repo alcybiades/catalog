@@ -203,10 +203,10 @@ struct HomeView: View {
                 Label("Blank Note", systemImage: "square.and.pencil")
             }
             Button { page.homeActions?.openFolder() } label: {
-                Label("Open Folder…", systemImage: "folder")
+                Label("Open Folder", systemImage: "folder")
             }
             Button { page.homeActions?.openFile() } label: {
-                Label("Open File…", systemImage: "doc")
+                Label("Open File", systemImage: "doc")
             }
         }
         .buttonStyle(.glassPill)
