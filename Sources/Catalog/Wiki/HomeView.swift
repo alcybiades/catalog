@@ -6,7 +6,6 @@ import SwiftUI
 /// Wikipedia tab it is Encyclopedia's search page.
 struct HomeView: View {
     @Environment(WikiPage.self) private var page
-    @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
     /// Settings' interface font; read here so the page restyles live.
     @AppStorage(Theme.interfaceFontKey, store: AppState.defaults) private var interfaceFamily = Theme.defaultInterfaceFontFamily
 
@@ -43,6 +42,7 @@ struct HomeView: View {
                     }
                     .zIndex(1)
                     shortcuts
+                        .frame(width: isLauncher && actionsSize.width > 0 ? actionsSize.width : nil)
                 }
                 .frame(maxWidth: 560)
                 .padding(.horizontal, WikiTheme.padding)
@@ -52,12 +52,26 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity)
             .containerRelativeFrame(.vertical, alignment: .center) { height, _ in height }
+            // Clicking the page outside a control leaves the search field.
+            .contentShape(Rectangle())
+            .onTapGesture { searchFocused = false }
         }
         .scrollBounceBehavior(.basedOnSize)
         .onAppear {
             recentFiles = page.homeActions?.recentFiles() ?? []
             withAnimation(.spring(response: 0.7, dampingFraction: 0.85).delay(0.05)) { appeared = true }
             searchFocused = true
+        }
+        .onChange(of: searchFocused) { _, focused in
+            if focused {
+                Task { await loadSuggestions() }
+            } else {
+                // After any click on a suggestion has landed.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    if !searchFocused { withAnimation(.snappy(duration: 0.2)) { suggestions = [] } }
+                }
+            }
         }
         .onChange(of: page.searchFocusRequest) {
             Task {
@@ -70,10 +84,12 @@ struct HomeView: View {
     // MARK: Pieces
 
     private var masthead: some View {
-        // Logo and wordmark on one line.
-        HStack(spacing: 14) {
+        // Logo and wordmark on one line, the wordmark's baseline on the
+        // logo's bottom edge.
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Image(systemName: isLauncher ? "text.book.closed.fill" : "book.closed.fill")
                 .font(.system(size: 36, weight: .regular))
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
@@ -138,9 +154,19 @@ struct HomeView: View {
                 suggestionRows
             }
         }
-        .background(WikiTheme.background.opacity(expanded ? 0.85 : 0), in: shape)
         .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(expanded ? 1 : 0))
-        .glassEffect(.regular.interactive(), in: shape)
+        // Translucent like the assistant: the open list crossfades from
+        // SwiftUI glass to AppKit glass, which blurs the page beneath.
+        .background {
+            ZStack {
+                Color.clear
+                    .glassEffect(.regular.interactive(), in: shape)
+                    .opacity(expanded ? 0 : 1)
+                PanelGlass(tint: ChatDock.panelTint, cornerRadius: fieldHeight / 2)
+                    .opacity(expanded ? 1 : 0)
+            }
+            .shadow(color: .black.opacity(expanded ? 0.25 : 0), radius: 16, y: 6)
+        }
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hasQuery)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.96)
@@ -197,7 +223,7 @@ struct HomeView: View {
         try? await Task.sleep(for: .milliseconds(150))
         guard !Task.isCancelled else { return }
         let titles = (try? await WikipediaClient.suggestions(for: term)) ?? []
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, searchFocused else { return }
         withAnimation(.snappy(duration: 0.2)) {
             suggestions = titles
             highlighted = nil
@@ -234,58 +260,81 @@ struct HomeView: View {
         .offset(y: appeared ? 0 : 10)
     }
 
-    private var shortcuts: some View {
-        VStack(spacing: 18) {
-            if isLauncher && !recentFiles.isEmpty {
-                chips("Recent files", items: recentFiles.prefix(8).map { ($0.path, $0.lastPathComponent) }) { path in
-                    page.homeActions?.openRecent(URL(fileURLWithPath: path))
-                }
+    /// A recent file or article, for the single Recent list.
+    private struct RecentItem: Identifiable {
+        let id: String
+        let label: String
+        let symbol: String
+        let open: () -> Void
+        var forget: (() -> Void)?
+    }
+
+    /// Files and articles together, most recently opened first; entries from
+    /// before opening times were kept follow in their own lists' order.
+    private var recentItems: [RecentItem] {
+        var items: [RecentItem] = []
+        if isLauncher {
+            items += recentFiles.map { url in
+                RecentItem(id: "file:" + url.path, label: url.lastPathComponent, symbol: "doc.text",
+                           open: { page.homeActions?.openRecent(url) })
             }
-            if !WikiRecents.shared.titles.isEmpty {
-                chips("Recently read", items: WikiRecents.shared.titles.prefix(8).map { ($0, $0) },
-                      onTap: { page.open($0) },
-                      onForget: { title in withAnimation(.snappy) { WikiRecents.shared.forget(title) } })
+        }
+        items += WikiRecents.shared.titles.map { title in
+            RecentItem(id: "wiki:" + title, label: title, symbol: "book",
+                       open: { page.open(title) },
+                       forget: { withAnimation(.snappy) { WikiRecents.shared.forget(title) } })
+        }
+        let times = RecentTimes.all
+        return items.enumerated()
+            .sorted { a, b in
+                let (ta, tb) = (times[a.element.id] ?? 0, times[b.element.id] ?? 0)
+                return ta != tb ? ta > tb : a.offset < b.offset
+            }
+            .prefix(10)
+            .map(\.element)
+    }
+
+    private var shortcuts: some View {
+        let items = recentItems
+        return VStack(spacing: 10) {
+            if !items.isEmpty {
+                Text("Recent")
+                    .font(WikiTheme.interface(interfaceFamily, size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(0.8)
+                    .foregroundStyle(WikiTheme.dim)
+                FlowLayout(spacing: 8, alignment: .center) {
+                    ForEach(items) { item in
+                        Button(action: item.open) {
+                            HStack(spacing: 6) {
+                                Image(systemName: item.symbol)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(WikiTheme.secondary)
+                                Text(item.label)
+                                    .font(WikiTheme.interface(interfaceFamily, size: 15))
+                                    .foregroundStyle(WikiTheme.foreground.opacity(0.9))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(PressableStyle())
+                        .background(WikiTheme.wash.opacity(0.05), in: Capsule())
+                        .overlay(Capsule().strokeBorder(WikiTheme.hairline, lineWidth: 1))
+                        .help(item.label)
+                        .contextMenu {
+                            if let forget = item.forget {
+                                Button("Remove from Recents", systemImage: "minus.circle", action: forget)
+                            }
+                        }
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
-    }
-
-    private func chips(_ heading: String, items: [(id: String, label: String)],
-                       onTap: @escaping (String) -> Void,
-                       onForget: ((String) -> Void)? = nil) -> some View {
-        VStack(spacing: 10) {
-            Text(heading)
-                .font(WikiTheme.interface(interfaceFamily, size: 11, weight: .semibold))
-                .textCase(.uppercase)
-                .tracking(0.8)
-                .foregroundStyle(WikiTheme.dim)
-            FlowLayout(spacing: 8, alignment: .center) {
-                ForEach(items, id: \.id) { item in
-                    Button {
-                        onTap(item.id)
-                    } label: {
-                        Text(item.label)
-                            .font(WikiTheme.body(bodyFamily, size: 15))
-                            .foregroundStyle(WikiTheme.foreground.opacity(0.9))
-                            .lineLimit(1)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(PressableStyle())
-                    .background(WikiTheme.wash.opacity(0.05), in: Capsule())
-                    .overlay(Capsule().strokeBorder(WikiTheme.hairline, lineWidth: 1))
-                    .help(item.id)
-                    .contextMenu {
-                        if let onForget {
-                            Button("Remove from Recents", systemImage: "minus.circle") { onForget(item.id) }
-                        }
-                    }
-                }
-            }
-        }
-        .transition(.opacity)
     }
 
     private var footer: some View {

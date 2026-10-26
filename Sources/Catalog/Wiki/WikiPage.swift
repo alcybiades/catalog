@@ -17,11 +17,31 @@ final class WikiRecents {
         list.insert(title, at: 0)
         titles = Array(list.prefix(12))
         AppState.defaults.set(titles, forKey: Self.key)
+        RecentTimes.touch("wiki:" + title)
     }
 
     func forget(_ title: String) {
         titles.removeAll { $0 == title }
         AppState.defaults.set(titles, forKey: Self.key)
+    }
+}
+
+/// When each recent file ("file:" + path) or article ("wiki:" + title) was
+/// last opened, so the home page can list them together, newest first.
+enum RecentTimes {
+    private static let key = "recentTimes"
+
+    static func touch(_ id: String) {
+        var times = all
+        times[id] = Date().timeIntervalSince1970
+        if times.count > 64 {
+            times = Dictionary(uniqueKeysWithValues: times.sorted { $0.value > $1.value }.prefix(48).map { ($0.key, $0.value) })
+        }
+        AppState.defaults.set(times, forKey: key)
+    }
+
+    static var all: [String: Double] {
+        AppState.defaults.dictionary(forKey: key) as? [String: Double] ?? [:]
     }
 }
 

@@ -298,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var list = recentFiles.filter { $0 != url.path }
         list.insert(url.path, at: 0)
         recentFiles = list
+        RecentTimes.touch("file:" + url.path)
     }
 
     func recentFileRenamed(from oldURL: URL, to newURL: URL) {
