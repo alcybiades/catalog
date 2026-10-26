@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 
 extension NSColor {
     convenience init?(hexString: String) {
@@ -25,62 +26,261 @@ extension NSColor {
     }
 }
 
-/// "Neon Noir" — mirrors ~/.wezterm.lua.
-enum Theme {
-    static let background = NSColor(hex: 0x141414)
-    static let backgroundOpacity: CGFloat = 0.60
+/// The app's color themes. Plasma, the original, tints a background blur;
+/// the others are opaque.
+enum ThemeKind: String, CaseIterable {
+    case plasma, dark, light, paper
 
-    static let foreground = NSColor(hex: 0x63D0FF)
-    private static func semanticColor(_ key: String, fallback: UInt32) -> NSColor? {
-        guard let stored = AppState.defaults.string(forKey: key) else { return NSColor(hex: fallback) }
-        if stored == "none" { return nil }
-        return NSColor(hexString: stored) ?? NSColor(hex: fallback)
+    var title: String { rawValue.capitalized }
+
+    /// The defaults key for this theme's override of a semantic color.
+    /// Plasma keeps the original unprefixed keys.
+    func key(_ name: String) -> String { self == .plasma ? name : "\(rawValue).\(name)" }
+
+    static var current: ThemeKind {
+        get { AppState.defaults.string(forKey: "theme").flatMap(ThemeKind.init) ?? .plasma }
+        set {
+            AppState.defaults.set(newValue.rawValue, forKey: "theme")
+            ThemeStore.shared.reload()
+        }
+    }
+}
+
+/// Every color one theme draws with. The semantic colors (bold through
+/// link) are the theme's defaults until `resolved` applies the user's
+/// overrides from Settings; nil leaves that text in the foreground color.
+struct Palette {
+    var isDark: Bool
+    var background: NSColor
+    /// The tint's opacity over the window blur; opaque themes have no blur.
+    var backgroundOpacity: CGFloat
+    var blurRadius: Int
+    var foreground: NSColor
+    /// Subdued Markdown syntax.
+    var dim: NSColor
+    /// Secondary chrome: inactive tabs, status, captions.
+    var secondary: NSColor
+    /// Hover, selection, and field fills, always drawn at low opacity.
+    var wash: NSColor
+    var sidebarFill: NSColor
+    var code: NSColor
+    var cursor: NSColor
+    var selection: NSColor
+    var selectedText: NSColor
+    var sidebarSelection: NSColor
+    var codeBackground: NSColor
+    var codeBlockBackground: NSColor
+    /// The user's turns in the assistant transcript.
+    var bubble: NSColor
+    var bubbleText: NSColor
+    var danger: NSColor
+    /// Timeline bars mix their Wikipedia color into this.
+    var diagramBase: NSColor
+
+    var bold: NSColor?
+    var heading: NSColor?
+    var italic: NSColor?
+    var inlineCode: NSColor?
+    var listMarker: NSColor?
+    var quote: NSColor?
+    var link: NSColor?
+
+    var appearance: NSAppearance? { NSAppearance(named: isDark ? .darkAqua : .aqua) }
+
+    static func named(_ kind: ThemeKind) -> Palette {
+        switch kind {
+        case .plasma: return plasma
+        case .dark: return dark
+        case .light: return light
+        case .paper: return paper
+        }
     }
 
+    /// "Neon Noir" — mirrors ~/.wezterm.lua.
+    static let plasma = Palette(
+        isDark: true,
+        background: NSColor(hex: 0x141414), backgroundOpacity: 0.60, blurRadius: 30,
+        foreground: NSColor(hex: 0x63D0FF), dim: NSColor(hex: 0x526078),
+        secondary: NSColor.white.withAlphaComponent(0.5), wash: .white,
+        sidebarFill: NSColor.black.withAlphaComponent(0.10),
+        code: NSColor(hex: 0x55E6A5), cursor: NSColor(hex: 0x727272),
+        selection: NSColor(hex: 0x334A7D), selectedText: NSColor(hex: 0xF8FAFC),
+        sidebarSelection: NSColor(hex: 0x7186A5, alpha: 0.28),
+        codeBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
+        codeBlockBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
+        bubble: NSColor.black.withAlphaComponent(0.25), bubbleText: NSColor.white.withAlphaComponent(0.92),
+        danger: NSColor(hex: 0xFF8A7A), diagramBase: NSColor(hex: 0x1C1D22),
+        bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xA4BEEF), italic: NSColor(hex: 0xD7E0FF),
+        inlineCode: NSColor(hex: 0xFFB86C), listMarker: NSColor(hex: 0xFFD166),
+        quote: NSColor(hex: 0xBF8EE8), link: NSColor(hex: 0x7DD3FC))
+
+    /// Neutral graphite: soft off-white text and a restrained blue.
+    static let dark = Palette(
+        isDark: true,
+        background: NSColor(hex: 0x212121), backgroundOpacity: 1, blurRadius: 0,
+        foreground: NSColor(hex: 0xE3E3E3), dim: NSColor(hex: 0x6B6B6B),
+        secondary: NSColor.white.withAlphaComponent(0.5), wash: .white,
+        sidebarFill: NSColor.black.withAlphaComponent(0.28),
+        code: NSColor(hex: 0xD4D4D4), cursor: NSColor(hex: 0xECECEC),
+        selection: NSColor(hex: 0x3B4F6E), selectedText: NSColor(hex: 0xFFFFFF),
+        sidebarSelection: NSColor.white.withAlphaComponent(0.09),
+        codeBackground: NSColor.white.withAlphaComponent(0.09),
+        codeBlockBackground: NSColor(hex: 0x171717),
+        bubble: NSColor.white.withAlphaComponent(0.08), bubbleText: NSColor(hex: 0xECECEC),
+        danger: NSColor(hex: 0xF28B82), diagramBase: NSColor(hex: 0x262626),
+        bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xF4F4F4), italic: NSColor(hex: 0xD0D0D0),
+        inlineCode: NSColor(hex: 0xE6B98C), listMarker: NSColor(hex: 0x9B9B9B),
+        quote: NSColor(hex: 0xB4B4B4), link: NSColor(hex: 0x7CB2F2))
+
+    /// White surfaces, near-black text, gray secondary text.
+    static let light = Palette(
+        isDark: false,
+        background: NSColor(hex: 0xFFFFFF), backgroundOpacity: 1, blurRadius: 0,
+        foreground: NSColor(hex: 0x1F1F1F), dim: NSColor(hex: 0xA8A8A8),
+        secondary: NSColor.black.withAlphaComponent(0.5), wash: .black,
+        sidebarFill: NSColor.black.withAlphaComponent(0.025),
+        code: NSColor(hex: 0x2B2B2B), cursor: NSColor(hex: 0x0D0D0D),
+        selection: NSColor(hex: 0xC6DCF8), selectedText: NSColor(hex: 0x0D0D0D),
+        sidebarSelection: NSColor.black.withAlphaComponent(0.06),
+        codeBackground: NSColor.black.withAlphaComponent(0.06),
+        codeBlockBackground: NSColor(hex: 0xF5F5F5),
+        bubble: NSColor.black.withAlphaComponent(0.05), bubbleText: NSColor(hex: 0x0D0D0D),
+        danger: NSColor(hex: 0xC5221F), diagramBase: NSColor(hex: 0xFFFFFF),
+        bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x0D0D0D), italic: NSColor(hex: 0x3A3A3A),
+        inlineCode: NSColor(hex: 0xB0412E), listMarker: NSColor(hex: 0x8F8F8F),
+        quote: NSColor(hex: 0x5D5D5D), link: NSColor(hex: 0x1F62D0))
+
+    /// Cream paper, warm brown-gray ink, and muted earthy accents.
+    static let paper = Palette(
+        isDark: false,
+        background: NSColor(hex: 0xF6EFDF), backgroundOpacity: 1, blurRadius: 0,
+        foreground: NSColor(hex: 0x4D4237), dim: NSColor(hex: 0xB3A48C),
+        secondary: NSColor(hex: 0x5C4B3B, alpha: 0.6), wash: NSColor(hex: 0x5C4B3B),
+        sidebarFill: NSColor(hex: 0x8A6A3A, alpha: 0.06),
+        code: NSColor(hex: 0x5F6B2C), cursor: NSColor(hex: 0x4D4237),
+        selection: NSColor(hex: 0xEADBB8), selectedText: NSColor(hex: 0x2F261E),
+        sidebarSelection: NSColor(hex: 0x8A6A3A, alpha: 0.14),
+        codeBackground: NSColor(hex: 0x8A6A3A, alpha: 0.10),
+        codeBlockBackground: NSColor(hex: 0xEFE5D0),
+        bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x3B3128),
+        danger: NSColor(hex: 0xB23A2E), diagramBase: NSColor(hex: 0xF6EFDF),
+        bold: NSColor(hex: 0x2F261E), heading: NSColor(hex: 0x9A5B2A), italic: NSColor(hex: 0x6A5846),
+        inlineCode: NSColor(hex: 0xA8473A), listMarker: NSColor(hex: 0xB07D2B),
+        quote: NSColor(hex: 0x7F6A8A), link: NSColor(hex: 0x2F6F8F))
+
+    static let semanticKeys: [(path: WritableKeyPath<Palette, NSColor?>, name: String)] = [
+        (\.bold, "boldColor"), (\.heading, "headingColor"), (\.italic, "italicColor"),
+        (\.inlineCode, "inlineCodeColor"), (\.listMarker, "listMarkerColor"),
+        (\.quote, "quoteColor"), (\.link, "linkColor"),
+    ]
+
+    /// The theme's palette with the user's semantic overrides applied.
+    static func resolved(_ kind: ThemeKind) -> Palette {
+        var palette = named(kind)
+        for (path, name) in semanticKeys {
+            guard let stored = AppState.defaults.string(forKey: kind.key(name)) else { continue }
+            palette[keyPath: path] = stored == "none" ? nil : NSColor(hexString: stored) ?? palette[keyPath: path]
+        }
+        return palette
+    }
+}
+
+/// The current theme's resolved palette. SwiftUI views reading it re-render
+/// when it changes; AppKit views refresh on `.themeDidChange`.
+@Observable
+final class ThemeStore {
+    static let shared = ThemeStore()
+    private(set) var kind = ThemeKind.current
+    private(set) var palette = Palette.resolved(ThemeKind.current)
+
+    func reload() {
+        kind = ThemeKind.current
+        palette = Palette.resolved(kind)
+        NotificationCenter.default.post(name: .themeDidChange, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let themeDidChange = Notification.Name("CatalogThemeDidChange")
+}
+
+/// A view that keeps palette colors where a redraw won't refresh them
+/// (layers, labels set up once) and re-applies them on a theme change.
+protocol ThemeRefreshing: NSView {
+    func applyTheme()
+}
+
+extension NSView {
+    /// Re-applies the palette throughout this view's subtree and redraws it.
+    func refreshTheme() {
+        (self as? ThemeRefreshing)?.applyTheme()
+        needsDisplay = true
+        subviews.forEach { $0.refreshTheme() }
+    }
+}
+
+/// The current palette, plus fonts and metrics.
+enum Theme {
+    static var palette: Palette { ThemeStore.shared.palette }
+
+    static var background: NSColor { palette.background }
+    static var backgroundOpacity: CGFloat { palette.backgroundOpacity }
+
+    static var foreground: NSColor { palette.foreground }
+
+    /// Overrides the current theme's semantic color; nil is "No color".
     private static func setSemanticColor(_ color: NSColor?, key: String) {
-        guard let color else { AppState.defaults.set("none", forKey: key); return }
-        if let hex = color.rgbHexString { AppState.defaults.set(hex, forKey: key) }
+        let key = ThemeKind.current.key(key)
+        if let color {
+            guard let hex = color.rgbHexString else { return }
+            AppState.defaults.set(hex, forKey: key)
+        } else {
+            AppState.defaults.set("none", forKey: key)
+        }
+        ThemeStore.shared.reload()
     }
 
     static var bold: NSColor? {
-        get { semanticColor("boldColor", fallback: 0xFFFFFF) }
+        get { palette.bold }
         set { setSemanticColor(newValue, key: "boldColor") }
     }
     static var heading: NSColor? {
-        get { semanticColor("headingColor", fallback: 0xA4BEEF) }
+        get { palette.heading }
         set { setSemanticColor(newValue, key: "headingColor") }
     }
     static var italic: NSColor? {
-        get { semanticColor("italicColor", fallback: 0xD7E0FF) }
+        get { palette.italic }
         set { setSemanticColor(newValue, key: "italicColor") }
     }
-    static let code = NSColor(hex: 0x55E6A5)
+    static var code: NSColor { palette.code }
     static var codeAmber: NSColor? {
-        get { semanticColor("inlineCodeColor", fallback: 0xFFB86C) }
+        get { palette.inlineCode }
         set { setSemanticColor(newValue, key: "inlineCodeColor") }
     }
-    static let dim = NSColor(hex: 0x526078)
+    static var dim: NSColor { palette.dim }
     // Translucent secondary chrome; separate from subdued Markdown syntax.
-    static let secondary = NSColor.white.withAlphaComponent(0.5)
+    static var secondary: NSColor { palette.secondary }
+    /// Fills drawn at low opacity: white on dark themes, ink on light ones.
+    static var wash: NSColor { palette.wash }
     static var listMarker: NSColor? {
-        get { semanticColor("listMarkerColor", fallback: 0xFFD166) }
+        get { palette.listMarker }
         set { setSemanticColor(newValue, key: "listMarkerColor") }
     }
     static var quote: NSColor? {
-        get { semanticColor("quoteColor", fallback: 0xBF8EE8) }
+        get { palette.quote }
         set { setSemanticColor(newValue, key: "quoteColor") }
     }
     static var link: NSColor? {
-        get { semanticColor("linkColor", fallback: 0x7DD3FC) }
+        get { palette.link }
         set { setSemanticColor(newValue, key: "linkColor") }
     }
-    static let cursor = NSColor(hex: 0x727272)
-    static let selection = NSColor(hex: 0x334A7D)
-    static let sidebarSelection = NSColor(hex: 0x7186A5, alpha: 0.28)
-    static let codeBackground = NSColor(hex: 0x2E2E2E, alpha: 0.5)
+    static var cursor: NSColor { palette.cursor }
+    static var selection: NSColor { palette.selection }
+    static var sidebarSelection: NSColor { palette.sidebarSelection }
+    static var codeBackground: NSColor { palette.codeBackground }
     /// Distinct instance so the layout manager can tell block bands from
     /// inline chips when padding background rects (compared by identity).
-    static let codeBlockBackground = NSColor(hex: 0x2E2E2E, alpha: 0.5)
+    static var codeBlockBackground: NSColor { palette.codeBlockBackground }
     static let codeBlockPadding: CGFloat = 12
 
     static let maxImageWidth: CGFloat = 440
@@ -107,7 +307,7 @@ enum Theme {
         ("Leaf Green", "86C56A"),
         ("Coral", "FF8A7A"),
     ]
-    static let halfOpacityText = foreground.withAlphaComponent(0.5)
+    static var halfOpacityText: NSColor { foreground.withAlphaComponent(0.5) }
     /// Prose column cap: about half a MacBook screen minus 80pt padding per
     /// side. Past this the window just grows its horizontal padding.
     static let maxTextWidth: CGFloat = 720

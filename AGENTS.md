@@ -13,7 +13,8 @@
 - Scripting flags for checking UI in a test-mode launch: `--wiki "Title"`
   opens an article, `--assistant` shows the assistant, `--ask "Question"`
   sends it one, `--assistant-model codex:<model>` (or `claude-code:opus`,
-  `claude-api`, `apple`) picks its model, `--scroll N` scrolls the note (or to Wikipedia block N), `--move-tab` moves
+  `claude-api`, `apple`) picks its model, `--theme dark` (or `plasma`,
+  `light`, `paper`) picks the theme, `--scroll N` scrolls the note (or to Wikipedia block N), `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
   composite, glass included.

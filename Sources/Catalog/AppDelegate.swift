@@ -27,6 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
             AgentBackend.preferred = backend
         }
+        // Scripting: `--theme plasma|dark|light|paper`.
+        if let index = CommandLine.arguments.firstIndex(of: "--theme"), CommandLine.arguments.indices.contains(index + 1),
+           let kind = ThemeKind(rawValue: CommandLine.arguments[index + 1].lowercased()) {
+            ThemeKind.current = kind
+        }
         buildMainMenu()
 
         let args = Array(CommandLine.arguments.dropFirst())
@@ -121,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).
@@ -381,11 +386,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if let path = tab["file"] { controller.restoreTab(url: URL(fileURLWithPath: path)) }
                 else if let title = tab["wiki"] { controller.restoreWikiTab(title: title) }
             }
-            if let root = entry["workspace"] as? String, !root.isEmpty,
-               FileManager.default.fileExists(atPath: root) {
-                controller.restoreWorkspace(root: URL(fileURLWithPath: root), collapsed: entry["sidebarCollapsed"] as? Bool ?? false,
-                                            width: CGFloat(entry["sidebarWidth"] as? Double ?? 220), media: entry["mediaMode"] as? Bool ?? false)
-            }
+            // Without a saved folder (or if it's gone), the sidebar browses ~/Documents.
+            let root = (entry["workspace"] as? String).flatMap { $0.isEmpty || !FileManager.default.fileExists(atPath: $0) ? nil : $0 }
+            controller.restoreWorkspace(root: root.map { URL(fileURLWithPath: $0) },
+                                        collapsed: entry["sidebarCollapsed"] as? Bool ?? (root == nil),
+                                        width: CGFloat(entry["sidebarWidth"] as? Double ?? 220), media: entry["mediaMode"] as? Bool ?? false)
             if let currentTab = entry["currentTab"] as? [String: String], let title = currentTab["wiki"],
                let index = controller.documents.firstIndex(where: { doc in
                    guard let page = doc.wiki else { return false }

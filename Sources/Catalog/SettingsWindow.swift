@@ -1,7 +1,7 @@
 import AppKit
 
-/// Minimal settings panel with independent document and interface fonts,
-/// applied live and persisted.
+/// Minimal settings panel with the theme, independent document and
+/// interface fonts, and semantic colors, applied live and persisted.
 final class SettingsWindowController: NSObject {
 
     private(set) var window: NSWindow?
@@ -13,6 +13,9 @@ final class SettingsWindowController: NSObject {
     private var keyField: NSSecureTextField?
     private var keyButton: NSButton?
     private var keyStatus: NSTextField?
+    private var themePopup: NSPopUpButton?
+    /// Color assignments to repeat when the theme changes.
+    private var themeUpdates: [() -> Void] = []
 
     private enum ColorRole: Int, CaseIterable {
         case bold, heading, italic, listMarker, quote, inlineCode, link
@@ -66,7 +69,7 @@ final class SettingsWindowController: NSObject {
 
     private func build() {
         let panel = CatalogWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 455, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 455, height: 578),
             styleMask: [.titled, .fullSizeContentView, .closable],
             backing: .buffered,
             defer: false
@@ -92,15 +95,16 @@ final class SettingsWindowController: NSObject {
 
         let heading = NSTextField(labelWithString: "settings")
         heading.font = Theme.interfaceFont(size: 12)
-        heading.textColor = Theme.secondary
+        themed { heading.textColor = Theme.secondary }
         interfaceLabels.append((heading, 12))
 
+        let themeRow = themePickerRow()
         let bodyRow = fontRow(label: "body font", selectedFamily: Theme.fontFamily, tag: 0)
         let interfaceRow = fontRow(label: "interface font", selectedFamily: Theme.interfaceFontFamily, tag: 1)
 
         let colorsHeading = NSTextField(labelWithString: "semantic colors")
         colorsHeading.font = Theme.interfaceFont(size: 12)
-        colorsHeading.textColor = Theme.secondary
+        themed { colorsHeading.textColor = Theme.secondary }
         interfaceLabels.append((colorsHeading, 12))
 
         let colorRows = ColorRole.allCases.map(colorRow)
@@ -111,11 +115,11 @@ final class SettingsWindowController: NSObject {
 
         let assistantHeading = NSTextField(labelWithString: "assistant")
         assistantHeading.font = Theme.interfaceFont(size: 12)
-        assistantHeading.textColor = Theme.secondary
+        themed { assistantHeading.textColor = Theme.secondary }
         interfaceLabels.append((assistantHeading, 12))
         let assistant = assistantRows()
 
-        let column = NSStackView(views: [heading, bodyRow, interfaceRow, colorsHeading, colors, assistantHeading, assistant])
+        let column = NSStackView(views: [heading, themeRow, bodyRow, interfaceRow, colorsHeading, colors, assistantHeading, assistant])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 13
@@ -125,6 +129,7 @@ final class SettingsWindowController: NSObject {
             column.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
             column.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
             column.topAnchor.constraint(equalTo: container.topAnchor, constant: 34),
+            themeRow.widthAnchor.constraint(equalToConstant: 405),
             bodyRow.widthAnchor.constraint(equalToConstant: 405),
             interfaceRow.widthAnchor.constraint(equalToConstant: 405),
             colors.widthAnchor.constraint(equalToConstant: 405),
@@ -132,20 +137,48 @@ final class SettingsWindowController: NSObject {
 
         panel.center()
         window = panel
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
+    }
+
+    /// Runs `apply` now and again whenever the theme changes.
+    private func themed(_ apply: @escaping () -> Void) {
+        apply()
+        themeUpdates.append(apply)
+    }
+
+    @objc private func themeDidChange() {
+        guard let window else { return }
+        applyThemeBackdrop(to: window)
+        themeUpdates.forEach { $0() }
+        themePopup?.selectItem(at: ThemeKind.allCases.firstIndex(of: ThemeKind.current) ?? 0)
+        for role in ColorRole.allCases {
+            colorWells[role.rawValue]?.color = role.color ?? Theme.foreground
+            colorWells[role.rawValue]?.isEnabled = role.color != nil
+            noColorButtons[role.rawValue]?.state = role.color == nil ? .on : .off
+        }
+        window.contentView?.refreshTheme()
+    }
+
+    private func themePickerRow() -> NSView {
+        let popup = NSPopUpButton()
+        popup.autoenablesItems = false
+        for kind in ThemeKind.allCases { popup.addItem(withTitle: kind.title) }
+        popup.selectItem(at: ThemeKind.allCases.firstIndex(of: ThemeKind.current) ?? 0)
+        popup.target = self
+        popup.action = #selector(themeSelected(_:))
+        themePopup = popup
+        return popupRow(label: "theme", popup: popup)
+    }
+
+    @objc private func themeSelected(_ sender: NSPopUpButton) {
+        let kinds = ThemeKind.allCases
+        guard kinds.indices.contains(sender.indexOfSelectedItem) else { return }
+        ThemeKind.current = kinds[sender.indexOfSelectedItem]
     }
 
     private func fontRow(label title: String, selectedFamily: String, tag: Int) -> NSView {
-        let label = NSTextField(labelWithString: title)
-        label.font = Theme.interfaceFont(size: 13)
-        label.textColor = Theme.foreground
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 105).isActive = true
-        interfaceLabels.append((label, 13))
-
         let popup = NSPopUpButton()
-        popup.isBordered = false
-        popup.font = Theme.interfaceFont(size: 13)
-        popup.contentTintColor = Theme.foreground
         popup.target = self
         popup.action = #selector(fontSelected(_:))
         popup.tag = tag
@@ -168,12 +201,27 @@ final class SettingsWindowController: NSObject {
         }
         popup.selectItem(withTitle: selectedFamily)
         if popup.selectedItem == nil { popup.selectItem(withTitle: Theme.defaultFontFamily) }
+        return popupRow(label: title, popup: popup)
+    }
+
+    /// A label and a borderless popup on a pill.
+    private func popupRow(label title: String, popup: NSPopUpButton) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = Theme.interfaceFont(size: 13)
+        themed { label.textColor = Theme.foreground }
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: 105).isActive = true
+        interfaceLabels.append((label, 13))
+
+        popup.isBordered = false
+        popup.font = Theme.interfaceFont(size: 13)
+        themed { popup.contentTintColor = Theme.foreground }
         popups.append(popup)
 
         // A subtle pill behind the borderless popup, echoing the tab style.
         let pill = NSView()
         pill.wantsLayer = true
-        pill.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        themed { pill.layer?.backgroundColor = Theme.wash.withAlphaComponent(0.08).cgColor }
         pill.layer?.cornerRadius = 5
         pill.translatesAutoresizingMaskIntoConstraints = false
         pill.widthAnchor.constraint(equalToConstant: 288).isActive = true
@@ -195,7 +243,7 @@ final class SettingsWindowController: NSObject {
     private func colorRow(_ role: ColorRole) -> NSView {
         let label = NSTextField(labelWithString: role.title)
         label.font = Theme.interfaceFont(size: 13)
-        label.textColor = Theme.foreground
+        themed { label.textColor = Theme.foreground }
         label.translatesAutoresizingMaskIntoConstraints = false
         label.widthAnchor.constraint(equalToConstant: 105).isActive = true
         interfaceLabels.append((label, 13))
@@ -233,7 +281,7 @@ final class SettingsWindowController: NSObject {
     private func assistantRows() -> NSView {
         let label = NSTextField(labelWithString: "anthropic key")
         label.font = Theme.interfaceFont(size: 13)
-        label.textColor = Theme.foreground
+        themed { label.textColor = Theme.foreground }
         label.translatesAutoresizingMaskIntoConstraints = false
         label.widthAnchor.constraint(equalToConstant: 105).isActive = true
         interfaceLabels.append((label, 13))
@@ -243,7 +291,7 @@ final class SettingsWindowController: NSObject {
         field.font = Theme.interfaceFont(size: 12)
         field.isBordered = false
         field.drawsBackground = true
-        field.backgroundColor = NSColor.white.withAlphaComponent(0.08)
+        themed { field.backgroundColor = Theme.wash.withAlphaComponent(0.08) }
         field.focusRingType = .none
         field.target = self
         field.action = #selector(keyAction(_:))
@@ -262,7 +310,7 @@ final class SettingsWindowController: NSObject {
 
         let status = NSTextField(wrappingLabelWithString: "")
         status.font = Theme.interfaceFont(size: 11)
-        status.textColor = Theme.secondary
+        themed { status.textColor = Theme.secondary }
         status.translatesAutoresizingMaskIntoConstraints = false
         status.widthAnchor.constraint(equalToConstant: 405).isActive = true
         keyStatus = status

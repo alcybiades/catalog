@@ -85,6 +85,44 @@ check("bullet glyph substitution preserves markdown source", tv.string, "- one\n
 checkTrue("unordered marker renders with a bullet glyph",
           tv.textStorage?.attribute(.glyphInfo, at: 0, effectiveRange: nil) is NSGlyphInfo)
 
+// Typing restyles only the edited lines; random edits (fences opening and
+// closing, list items appearing) must leave exactly what a full pass does.
+do {
+    var seed: UInt64 = 0x5EED
+    func random(_ n: Int) -> Int {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        return Int((seed >> 33) % UInt64(max(n, 1)))
+    }
+    let pieces = ["```\n", "~~~\n", "```", "- item\n", "1. one\n", "  - [ ] task\n", "> quote *i*\n",
+                  "# Head\n", "text **b** `c` [l](x) [[w]]\n", "---\n", "\n", "-", " ", "*", "`", "x"]
+    // NSGlyphInfo compares by identity; compare the glyph it draws.
+    func normalized(_ text: NSAttributedString) -> NSAttributedString {
+        let copy = NSMutableAttributedString(attributedString: text)
+        copy.enumerateAttribute(.glyphInfo, in: NSRange(location: 0, length: copy.length)) { value, range, _ in
+            guard let info = value as? NSGlyphInfo else { return }
+            copy.addAttribute(.glyphInfo, value: "\(info.glyphID) \(info.baseString)", range: range)
+        }
+        return copy
+    }
+    let tv = makeTV((0..<40).map { _ in pieces[random(pieces.count)] }.joined(), caret: 0)
+    tv.rehighlight()
+    var mismatch: String?
+    for step in 0..<300 where mismatch == nil {
+        for _ in 0...random(3) {  // edits between passes accumulate
+            let length = tv.textStorage!.length
+            let location = random(length + 1)
+            let range = NSRange(location: location, length: random(4) == 0 ? min(random(12), length - location) : 0)
+            let replacement = range.length > 0 && random(2) == 0 ? "" : pieces[random(pieces.count)]
+            tv.textStorage!.replaceCharacters(in: range, with: replacement)
+        }
+        tv.highlightEdits()
+        let incremental = normalized(tv.textStorage!)
+        tv.rehighlight()
+        if !incremental.isEqual(to: normalized(tv.textStorage!)) { mismatch = "step \(step): \(tv.string.debugDescription)" }
+    }
+    check("incremental highlighting matches a full pass", mismatch ?? "", "")
+}
+
 tv = makeTV("*italic*", caret: 1) // visually before the first character
 tv.rehighlight()
 tv.insertNewline(nil)

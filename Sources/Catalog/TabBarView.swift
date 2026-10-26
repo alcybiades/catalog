@@ -2,7 +2,7 @@ import AppKit
 
 /// Minimal terminal-styled tab strip with hover-close, drag-to-reorder,
 /// and dragging tabs out into new windows or into another window's strip.
-final class TabBarView: NSView {
+final class TabBarView: NSView, ThemeRefreshing {
 
     /// Equal gap from the window's top-left corner to the first tab, both axes.
     static let cornerPadding: CGFloat = 15
@@ -123,6 +123,8 @@ final class TabBarView: NSView {
         toggle.needsDisplay = true
     }
     func fadeInTabs() { SidebarTransition.fadeIn([tabScroll]) }
+
+    func applyTheme() { toggle.contentTintColor = Theme.secondary }
 
     @objc private func toggleSidebar() { onToggleSidebar?() }
 
@@ -377,7 +379,7 @@ private final class NewTabButton: NSView {
     func setHovered(_ value: Bool) {
         guard hovered != value else { return }
         hovered = value
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(value ? 0.06 : 0).cgColor
+        layer?.backgroundColor = Theme.wash.withAlphaComponent(value ? 0.06 : 0).cgColor
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -434,7 +436,7 @@ private final class TabItemView: NSView {
         layer?.cornerRadius = TabBarView.pillRadius
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = active
-            ? NSColor.white.withAlphaComponent(0.08).cgColor
+            ? Theme.wash.withAlphaComponent(0.08).cgColor
             : NSColor.clear.cgColor
 
         label.font = Theme.interfaceFont(size: 13.5)
@@ -560,7 +562,7 @@ private final class TabDragGhost {
             imageView.layer?.cornerCurve = .continuous
             imageView.layer?.masksToBounds = true
             imageView.layer?.borderWidth = 1
-            imageView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            imageView.layer?.borderColor = Theme.wash.withAlphaComponent(0.12).cgColor
             preview = floatingWindow(imageView)
             preview?.alphaValue = 0
         } else {
