@@ -23,9 +23,9 @@ struct HomeView: View {
         ScrollView {
             VStack(spacing: 0) {
                 Spacer(minLength: PageMetrics.contentTop)
-                VStack(spacing: 30) {
+                VStack(spacing: 26) {
                     masthead
-                    VStack(spacing: 20) {
+                    VStack(spacing: 16) {
                         if isLauncher {
                             launcherActions
                                 .onGeometryChange(for: CGSize.self) { $0.size } action: { actionsSize = $0 }
@@ -38,7 +38,7 @@ struct HomeView: View {
                             .frame(height: fieldHeight)
                             .overlay(alignment: .top) { searchField.fixedSize(horizontal: false, vertical: true) }
                             .frame(width: isLauncher && actionsSize.width > 0 ? actionsSize.width : nil)
-                            .frame(maxWidth: isLauncher ? nil : 460)
+                            .frame(maxWidth: isLauncher ? nil : 420)
                     }
                     .zIndex(1)
                     shortcuts
@@ -84,16 +84,16 @@ struct HomeView: View {
     // MARK: Pieces
 
     private var masthead: some View {
-        // Logo and wordmark on one line, the wordmark's baseline on the
-        // logo's bottom edge.
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
+        // Logo and wordmark on one line, the logo centered on the capitals.
+        HStack(alignment: .capCenter, spacing: 12) {
             Image(systemName: isLauncher ? "text.book.closed.fill" : "book.closed.fill")
-                .font(.system(size: 36, weight: .regular))
-                .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
+                .font(.system(size: 31, weight: .regular))
+                .alignmentGuide(.capCenter) { $0[VerticalAlignment.center] }
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
-                .font(.custom("Hoefler Text", fixedSize: 46).weight(.semibold))
+                .font(.custom("Hoefler Text", fixedSize: Self.wordmarkSize).weight(.semibold))
+                .alignmentGuide(.capCenter) { $0[.firstTextBaseline] - Self.wordmarkCapHeight / 2 }
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
@@ -102,6 +102,13 @@ struct HomeView: View {
         .offset(y: appeared ? 0 : 14)
     }
 
+    /// The pills', search field's, and suggestions' text size.
+    private static let textSize: CGFloat = 14
+    private static let wordmarkSize: CGFloat = 40
+    private static let wordmarkCapHeight: CGFloat =
+        NSFontManager.shared.font(withFamily: "Hoefler Text", traits: .boldFontMask, weight: 9, size: wordmarkSize)?.capHeight
+            ?? wordmarkSize * 0.66
+
     private var searchField: some View {
         let hasQuery = !query.trimmingCharacters(in: .whitespaces).isEmpty
         let expanded = !suggestions.isEmpty
@@ -109,13 +116,13 @@ struct HomeView: View {
         // same shape downward instead of floating as a separate card.
         let shape = RoundedRectangle(cornerRadius: fieldHeight / 2, style: .continuous)
         return VStack(spacing: 0) {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
                 TextField("Search Wikipedia", text: $query)
                     .textFieldStyle(.plain)
-                    .font(WikiTheme.interface(interfaceFamily, size: 16))
+                    .font(WikiTheme.interface(interfaceFamily, size: Self.textSize))
                     .foregroundStyle(WikiTheme.foreground)
                     .offset(y: capCentering)
                     .focused($searchFocused)
@@ -133,7 +140,7 @@ struct HomeView: View {
                         query = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
+                            .font(.system(size: 14))
                             .foregroundStyle(WikiTheme.secondary)
                     }
                     .buttonStyle(.plain)
@@ -141,7 +148,7 @@ struct HomeView: View {
                     .accessibilityLabel("Clear")
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .frame(height: fieldHeight)
             .contentShape(Rectangle())
             .onTapGesture { searchFocused = true }
@@ -150,7 +157,7 @@ struct HomeView: View {
                 Rectangle()
                     .fill(WikiTheme.hairline)
                     .frame(height: 1)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 14)
                 suggestionRows
             }
         }
@@ -177,13 +184,13 @@ struct HomeView: View {
     /// seats capitals high; this moves their middle to the field's middle.
     private var capCentering: CGFloat {
         guard let font = NSFontManager.shared.font(withFamily: WikiTheme.interfaceFamily(interfaceFamily),
-                                                   traits: [], weight: 5, size: 16) else { return 0 }
+                                                   traits: [], weight: 5, size: Self.textSize) else { return 0 }
         return (max(0, font.capHeight - font.ascender - font.descender)).rounded() / 2
     }
 
     /// As tall as the action pills (so the same capsule), whatever the font.
     private var fieldHeight: CGFloat {
-        isLauncher && actionsSize.height > 0 ? actionsSize.height : 44
+        isLauncher && actionsSize.height > 0 ? actionsSize.height : 38
     }
 
     /// Article titles starting with the query; ↑/↓ pick one, Return opens it.
@@ -193,16 +200,16 @@ struct HomeView: View {
                 Button { pick(title) } label: {
                     HStack(spacing: 9) {
                         Image(systemName: "magnifyingglass")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(WikiTheme.secondary)
                         Text(title)
-                            .font(WikiTheme.interface(interfaceFamily, size: 16))
+                            .font(WikiTheme.interface(interfaceFamily, size: Self.textSize))
                             .foregroundStyle(WikiTheme.foreground)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .frame(height: 36)
+                    .padding(.horizontal, 14)
+                    .frame(height: 32)
                     .background(index == highlighted ? WikiTheme.wash.opacity(0.08) : .clear)
                     .contentShape(Rectangle())
                 }
@@ -250,10 +257,10 @@ struct HomeView: View {
                 Label("Open File", systemImage: "doc")
             }
         }
-        .buttonStyle(GlassPillStyle(horizontal: 20, vertical: 12))
+        .buttonStyle(GlassPillStyle(horizontal: 17, vertical: 10))
         // Each pill keeps its natural width in the interface font, and the
         // search field spans the row.
-        .font(WikiTheme.interface(interfaceFamily, size: 16))
+        .font(WikiTheme.interface(interfaceFamily, size: Self.textSize))
         .lineLimit(1)
         .fixedSize()
         .opacity(appeared ? 1 : 0)
@@ -308,15 +315,15 @@ struct HomeView: View {
                         Button(action: item.open) {
                             HStack(spacing: 6) {
                                 Image(systemName: item.symbol)
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 11))
                                     .foregroundStyle(WikiTheme.secondary)
                                 Text(item.label)
-                                    .font(WikiTheme.interface(interfaceFamily, size: 15))
+                                    .font(WikiTheme.interface(interfaceFamily, size: 13))
                                     .foregroundStyle(WikiTheme.foreground.opacity(0.9))
                                     .lineLimit(1)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
                             .contentShape(Capsule())
                         }
                         .buttonStyle(PressableStyle())
@@ -413,4 +420,12 @@ struct FlowLayout: Layout {
         }
         return lines.filter { !$0.indices.isEmpty }
     }
+}
+
+private extension VerticalAlignment {
+    /// The middle of a line's capital letters.
+    enum CapCenter: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat { context[VerticalAlignment.center] }
+    }
+    static let capCenter = VerticalAlignment(CapCenter.self)
 }
