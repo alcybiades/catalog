@@ -17,4 +17,13 @@
   `light`, `paper`) picks the theme, `--scroll N` scrolls the note (or to Wikipedia block N), `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
-  composite, glass included.
+  composite, glass included. `--theme plasma|dark|light|paper` picks the
+  theme; `--frame x,y,w,h` sets the window frame in points from the primary
+  screen's top-left; a folder path argument opens it as the workspace (add a
+  note's path to show it too) and `--media` switches it to the media view;
+  `--assistant` shows the floating panel and `--assistant-docked` the docked
+  one; `--transcript file.json` (test mode only) preloads a canned
+  conversation, as in `Support/Showcase/transcript.json`, without calling a
+  model. Each test-mode launch gets its own preferences suite, so concurrent
+  instances keep their own themes. `Support/Showcase/stage.sh [app] [shots]`
+  tiles the four README showcase windows, optionally snapshotting each.
