@@ -73,6 +73,9 @@ struct Palette {
     /// The user's turns in the assistant transcript.
     var bubble: NSColor
     var bubbleText: NSColor
+    /// The assistant's send button and the arrow on it.
+    var send: NSColor
+    var sendGlyph: NSColor
     var danger: NSColor
     /// Timeline bars mix their Wikipedia color into this.
     var diagramBase: NSColor
@@ -109,6 +112,7 @@ struct Palette {
         codeBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
         codeBlockBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
         bubble: NSColor.black.withAlphaComponent(0.25), bubbleText: NSColor.white.withAlphaComponent(0.92),
+        send: .white, sendGlyph: NSColor(hex: 0x141414),
         danger: NSColor(hex: 0xFF8A7A), diagramBase: NSColor(hex: 0x1C1D22),
         bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xA4BEEF), italic: NSColor(hex: 0xD7E0FF),
         inlineCode: NSColor(hex: 0xFFB86C), listMarker: NSColor(hex: 0xFFD166),
@@ -127,6 +131,7 @@ struct Palette {
         codeBackground: NSColor.white.withAlphaComponent(0.09),
         codeBlockBackground: NSColor(hex: 0x171717),
         bubble: NSColor.white.withAlphaComponent(0.08), bubbleText: NSColor(hex: 0xECECEC),
+        send: NSColor(hex: 0x3D7FE0), sendGlyph: .white,
         danger: NSColor(hex: 0xF28B82), diagramBase: NSColor(hex: 0x262626),
         bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xF4F4F4), italic: NSColor(hex: 0xD0D0D0),
         inlineCode: NSColor(hex: 0xE6B98C), listMarker: NSColor(hex: 0x9B9B9B),
@@ -145,6 +150,7 @@ struct Palette {
         codeBackground: NSColor.black.withAlphaComponent(0.06),
         codeBlockBackground: NSColor(hex: 0xF5F5F5),
         bubble: NSColor.black.withAlphaComponent(0.05), bubbleText: NSColor(hex: 0x0D0D0D),
+        send: NSColor(hex: 0x1F62D0), sendGlyph: .white,
         danger: NSColor(hex: 0xC5221F), diagramBase: NSColor(hex: 0xFFFFFF),
         bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x0D0D0D), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xB0412E), listMarker: NSColor(hex: 0x8F8F8F),
@@ -163,6 +169,7 @@ struct Palette {
         codeBackground: NSColor(hex: 0x8A6A3A, alpha: 0.10),
         codeBlockBackground: NSColor(hex: 0xEFE5D0),
         bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x1A1A1A),
+        send: NSColor(hex: 0x1A1A1A), sendGlyph: NSColor(hex: 0xF6EFDF),
         danger: NSColor(hex: 0xB23A2E), diagramBase: NSColor(hex: 0xF6EFDF),
         bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x141414), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xA8473A), listMarker: NSColor(hex: 0xB07D2B),

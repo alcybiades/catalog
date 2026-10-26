@@ -241,14 +241,16 @@ struct AgentPanel: View {
                     .focused($focused)
                     .onSubmit(send)
                     .padding(.vertical, 8)
+                    .frame(minHeight: Self.inputRowHeight)
+                // As tall as one line of the field: centered beside a
+                // single line, beside the last line once it grows.
                 sendButton
+                    .frame(height: Self.inputRowHeight)
             }
             .padding(.leading, 14)
             .padding(.trailing, 6)
             .padding(.vertical, 4)
-            .background(WikiTheme.wash.opacity(focused ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(focused ? WikiTheme.foreground.opacity(0.35) : WikiTheme.hairline, lineWidth: 1))
+            .background { inputBackground }
             .animation(.easeOut(duration: 0.15), value: focused)
             .contentShape(Rectangle())
             .onTapGesture { focused = true }
@@ -269,6 +271,23 @@ struct AgentPanel: View {
         }
     }
 
+    private static let inputRowHeight: CGFloat = 34
+
+    /// Floating, the field is glass over the panel; docked, a soft wash
+    /// with a focus ring.
+    @ViewBuilder
+    private var inputBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        if style == .floating {
+            // A faint wash keeps the field's edge visible where the
+            // glass has little beneath it to bend.
+            shape.fill(WikiTheme.wash.opacity(0.04)).glassEffect(.regular.interactive(), in: shape)
+        } else {
+            shape.fill(WikiTheme.wash.opacity(focused ? 0.08 : 0.05))
+                .overlay(shape.strokeBorder(focused ? WikiTheme.foreground.opacity(0.35) : WikiTheme.hairline, lineWidth: 1))
+        }
+    }
+
     /// In the panel's lower-right corner, centered where the assistant
     /// button was, so opening and minimizing can be clicked in one spot.
     private var minimizeButton: some View {
@@ -276,35 +295,34 @@ struct AgentPanel: View {
             .padding((ChatDock.size - 30) / 2)
     }
 
+    /// A solid circle in the theme's send color.
     @ViewBuilder
     private var sendButton: some View {
         let canSend = !session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if session.isResponding {
             Button(action: session.stop) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 20, height: 20)
+                sendCircle("stop.fill", size: 10, active: true)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .tint(WikiTheme.selection)
+            .buttonStyle(.plain)
             .help("Stop")
-            .padding(.bottom, 2)
         } else {
             Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 20, height: 20)
+                sendCircle("arrow.up", size: 13, active: canSend)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .tint(canSend ? WikiTheme.foreground.opacity(0.85) : WikiTheme.wash.opacity(0.12))
+            .buttonStyle(.plain)
             .disabled(!canSend)
-            // A disabled glass button keeps its first tint; rebuild it per theme.
-            .id(ThemeStore.shared.kind)
             .help("Send")
-            .padding(.bottom, 2)
         }
+    }
+
+    private func sendCircle(_ symbol: String, size: CGFloat, active: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: size, weight: .bold))
+            .foregroundStyle(active ? WikiTheme.sendGlyph : WikiTheme.secondary)
+            .frame(width: 26, height: 26)
+            .background(active ? WikiTheme.send : WikiTheme.wash.opacity(0.12), in: Circle())
+            .contentShape(Circle())
+            .animation(.easeOut(duration: 0.12), value: active)
     }
 
     private func send() {

@@ -37,6 +37,8 @@ enum WikiTheme {
     static var codeBlockBackground: Color { Color(nsColor: palette.codeBlockBackground) }
     static var bubble: Color { Color(nsColor: palette.bubble) }
     static var bubbleText: Color { Color(nsColor: palette.bubbleText) }
+    static var send: Color { Color(nsColor: palette.send) }
+    static var sendGlyph: Color { Color(nsColor: palette.sendGlyph) }
     static var danger: Color { Color(nsColor: palette.danger) }
     static var diagramBase: Color { Color(nsColor: palette.diagramBase) }
 
