@@ -172,7 +172,7 @@ private struct ArticleBody: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 10)
                 if let caption = article.leadCaption {
-                    Text(caption)
+                    Text(WikiTheme.styled(caption))
                         .font(font.scaled(0.8))
                         .foregroundStyle(WikiTheme.secondary)
                         .tint(WikiTheme.link.opacity(0.85))
@@ -221,7 +221,7 @@ private struct LoadingView: View {
             }
             bar(width: 0.4, height: font.size * 0.8).padding(.bottom, 8)
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(WikiTheme.wash.opacity(0.05))
                 .frame(height: 200)
                 .padding(.bottom, 8)
             ForEach(0..<9, id: \.self) { index in
@@ -244,7 +244,7 @@ private struct LoadingView: View {
     private func bar(width: CGFloat, height: CGFloat) -> some View {
         GeometryReader { proxy in
             RoundedRectangle(cornerRadius: height / 2.5, style: .continuous)
-                .fill(Color.white.opacity(0.08))
+                .fill(WikiTheme.wash.opacity(0.08))
                 .frame(width: proxy.size.width * width)
         }
         .frame(height: height)

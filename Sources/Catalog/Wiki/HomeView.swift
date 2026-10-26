@@ -62,6 +62,14 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
+            if isLauncher {
+                Text("Notes & Encyclopedia")
+                    .font(WikiTheme.interface(size: 12, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(2.4)
+                    .foregroundStyle(WikiTheme.foreground.opacity(0.75))
+                    .padding(.top, -8)
+            }
             Text(isLauncher
                  ? "Start from Wikipedia, a folder of notes, or a blank page."
                  : "Every article on Wikipedia, ready to read and question.")
@@ -196,7 +204,7 @@ struct HomeView: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(PressableStyle())
-                    .background(Color.white.opacity(0.05), in: Capsule())
+                    .background(WikiTheme.wash.opacity(0.05), in: Capsule())
                     .overlay(Capsule().strokeBorder(WikiTheme.hairline, lineWidth: 1))
                     .help(item.id)
                     .contextMenu {

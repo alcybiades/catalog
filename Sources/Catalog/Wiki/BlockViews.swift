@@ -82,7 +82,7 @@ struct BlockView: View {
                     .padding(14)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            .background(Color(hex: 0x2E2E2E, opacity: 0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(WikiTheme.codeBlockBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
         case .timeline(let timeline):
             GraphicalTimelineView(timeline: timeline, font: font)
@@ -105,7 +105,7 @@ struct ProseText: View {
     let color: Color
 
     var body: some View {
-        Text(text)
+        Text(WikiTheme.styled(text))
             .font(font)
             .foregroundStyle(color)
             .tint(WikiTheme.link)
@@ -140,7 +140,7 @@ struct FigureView: View {
                 .scrollClipDisabled()
             }
             if let caption {
-                Text(caption)
+                Text(WikiTheme.styled(caption))
                     .font(font.scaled(0.8))
                     .foregroundStyle(WikiTheme.secondary)
                     .tint(WikiTheme.link.opacity(0.85))
@@ -294,7 +294,7 @@ struct TableView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let caption = table.caption {
-                Text(caption)
+                Text(WikiTheme.styled(caption))
                     .font(font.scaled(0.82).italic())
                     .foregroundStyle(WikiTheme.secondary)
                     .tint(WikiTheme.link)
@@ -302,7 +302,7 @@ struct TableView: View {
             HorizontalOverflow { grid }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available = $0 }
-                .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(WikiTheme.wash.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(WikiTheme.hairline, lineWidth: 1)
                 }
@@ -338,7 +338,7 @@ struct TableView: View {
 
     @ViewBuilder
     private func cellText(_ cell: TableCell, width: CGFloat?) -> some View {
-        let text = Text(cell.text)
+        let text = Text(WikiTheme.styled(cell.text))
             .font(font.scaled(0.8))
             .foregroundStyle(cell.isHeader ? WikiTheme.heading : WikiTheme.foreground)
             .tint(WikiTheme.link)
@@ -428,7 +428,7 @@ struct InfoboxView: View {
         case .text(let value):
             valueText(value)
         case .subheader(let value):
-            Text(value)
+            Text(WikiTheme.styled(value))
                 .font(font.scaled(0.9).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
                 .tint(WikiTheme.link)
@@ -466,12 +466,12 @@ struct InfoboxView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.07), in: Capsule())
+                    .background(WikiTheme.wash.opacity(0.07), in: Capsule())
                     .fixedSize()
             }
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 if let next {
-                    Text(next)
+                    Text(WikiTheme.styled(next))
                         .font(font.scaled(0.84))
                         .foregroundStyle(WikiTheme.foreground)
                         .tint(WikiTheme.link)
@@ -495,7 +495,7 @@ struct InfoboxView: View {
     }
 
     private func valueText(_ value: AttributedString) -> some View {
-        Text(value)
+        Text(WikiTheme.styled(value))
             .font(font.scaled(0.84))
             .foregroundStyle(WikiTheme.foreground)
             .tint(WikiTheme.link)

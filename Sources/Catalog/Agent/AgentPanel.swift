@@ -40,15 +40,15 @@ struct AgentPanel: View {
         .background {
             if style == .docked {
                 HStack(spacing: 0) {
-                    Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1)
-                    Color.black.opacity(0.10)
+                    Rectangle().fill(WikiTheme.wash.opacity(0.07)).frame(width: 1)
+                    WikiTheme.sidebarFill
                 }
                 .ignoresSafeArea()
             }
         }
         .onExitCommand { if style == .floating { actions.close() } }
         .tint(WikiTheme.foreground)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
         .onChange(of: session.focusRequest) { if session.activeStyle == style { focused = true } }
         .onAppear {
             if session.activeStyle == style { focused = true }
@@ -76,7 +76,6 @@ struct AgentPanel: View {
             }
             if style == .floating {
                 iconButton("sidebar.right", help: "Dock to the Side", action: actions.toggleDocked)
-                iconButton("arrow.down.right.and.arrow.up.left", help: "Minimize (⌘J)", action: actions.close)
             } else {
                 iconButton("rectangle.inset.bottomright.filled", help: "Float", action: actions.toggleDocked)
                 iconButton("sidebar.right", help: "Hide Assistant (⌘J)", action: actions.close)
@@ -245,7 +244,7 @@ struct AgentPanel: View {
             .padding(.leading, 14)
             .padding(.trailing, 6)
             .padding(.vertical, 4)
-            .background(Color.white.opacity(focused ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(WikiTheme.wash.opacity(focused ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(focused ? WikiTheme.foreground.opacity(0.35) : WikiTheme.hairline, lineWidth: 1))
             .animation(.easeOut(duration: 0.15), value: focused)
@@ -254,10 +253,6 @@ struct AgentPanel: View {
             HStack(spacing: 6) {
                 ModelPicker(session: session)
                 Spacer(minLength: 4)
-                Label((session.workingDirectory.path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .help("The assistant can create and edit files here")
             }
             .font(WikiTheme.interface(size: 10.5))
             .foregroundStyle(WikiTheme.dim)
@@ -265,7 +260,18 @@ struct AgentPanel: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 12)
+        // Floating, the footer row sits level with the minimize button.
+        .padding(.bottom, style == .floating ? 19 : 12)
+        .overlay(alignment: .bottomTrailing) {
+            if style == .floating { minimizeButton }
+        }
+    }
+
+    /// In the panel's lower-right corner, centered where the assistant
+    /// button was, so opening and minimizing can be clicked in one spot.
+    private var minimizeButton: some View {
+        iconButton("arrow.down.right.and.arrow.up.left", help: "Minimize (⌘J)", action: actions.close)
+            .padding((ChatDock.size - 30) / 2)
     }
 
     @ViewBuilder
@@ -290,8 +296,10 @@ struct AgentPanel: View {
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
-            .tint(canSend ? WikiTheme.foreground.opacity(0.85) : Color.white.opacity(0.12))
+            .tint(canSend ? WikiTheme.foreground.opacity(0.85) : WikiTheme.wash.opacity(0.12))
             .disabled(!canSend)
+            // A disabled glass button keeps its first tint; rebuild it per theme.
+            .id(ThemeStore.shared.kind)
             .help("Send")
             .padding(.bottom, 2)
         }
@@ -324,11 +332,11 @@ private struct ItemView: View {
                 }
                 Text(item.text)
                     .font(font.scaled(0.86))
-                    .foregroundStyle(Color.white.opacity(0.92))
+                    .foregroundStyle(WikiTheme.bubbleText)
                     .lineSpacing(2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(WikiTheme.bubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -353,7 +361,7 @@ private struct ItemView: View {
         case .error:
             Label(item.text, systemImage: "exclamationmark.triangle")
                 .font(WikiTheme.interface(size: 12.5))
-                .foregroundStyle(Color(hex: 0xFF8A7A))
+                .foregroundStyle(WikiTheme.danger)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -399,7 +407,7 @@ private struct ToolRow: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(item.status == .failed ? Color(hex: 0xFF8A7A) : WikiTheme.code)
+                .foregroundStyle(item.status == .failed ? WikiTheme.danger : WikiTheme.code)
                 .symbolEffect(.rotate, options: .repeating, isActive: item.status == .running)
             Text(item.text)
                 .font(WikiTheme.interface(size: 12))
@@ -417,7 +425,7 @@ private struct ToolRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(WikiTheme.wash.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(WikiTheme.hairline, lineWidth: 1))
         .help(item.detail ?? item.text)
     }
@@ -521,7 +529,7 @@ private struct NoticeCard: View {
             }
         }
         .padding(12)
-        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(WikiTheme.wash.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WikiTheme.hairline, lineWidth: 1))
     }
 }

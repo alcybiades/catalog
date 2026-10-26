@@ -164,16 +164,42 @@ final class EditorTextView: NSTextView {
         isIncrementalSearchingEnabled = true
         smartInsertDeleteEnabled = false
 
-        insertionPointColor = Theme.cursor
-        selectedTextAttributes = [
-            .backgroundColor: Theme.selection,
-            .foregroundColor: NSColor(hex: 0xF8FAFC),
-        ]
-        typingAttributes = Theme.baseAttributes
+        applyTheme()
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(selectionChanged),
             name: NSTextView.didChangeSelectionNotification, object: self)
+        // Any storage: tabs swap the view's storage in and out.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(storageDidProcessEditing(_:)),
+            name: NSTextStorage.didProcessEditingNotification, object: nil)
+    }
+
+    /// Characters edited since the last highlight pass, in current storage
+    /// coordinates; `highlightEdits()` restyles just these lines.
+    private var pendingEdit: NSRange?
+
+    @objc private func storageDidProcessEditing(_ note: Notification) {
+        guard let storage = note.object as? NSTextStorage, storage === textStorage,
+              storage.editedMask.contains(.editedCharacters) else { return }
+        let edited = storage.editedRange
+        guard let pending = pendingEdit else { pendingEdit = edited; return }
+        // Shift the earlier range's end past this edit, then union.
+        var pendingEnd = NSMaxRange(pending)
+        if pendingEnd > edited.location { pendingEnd += storage.changeInLength }
+        let start = min(pending.location, edited.location)
+        let end = min(max(pendingEnd, NSMaxRange(edited)), storage.length)
+        pendingEdit = NSRange(location: start, length: max(0, end - start))
+    }
+
+    /// The caret and selection colors; the text itself follows on rehighlight.
+    func applyTheme() {
+        insertionPointColor = Theme.cursor
+        selectedTextAttributes = [
+            .backgroundColor: Theme.selection,
+            .foregroundColor: Theme.palette.selectedText,
+        ]
+        typingAttributes = Theme.baseAttributes
     }
 
     /// Supplies the current document's directory so relative image paths
@@ -184,7 +210,10 @@ final class EditorTextView: NSTextView {
         }
     }
 
+    /// Restyles the whole document: on display, and after font, color,
+    /// embed or workspace changes. Edits only need `highlightEdits()`.
     func rehighlight() {
+        pendingEdit = nil
         highlighter.baseDirectory = baseDirectoryProvider?() ?? nil
         highlighter.resolveWikiLink = wikiLinkResolver
         if let textStorage { highlighter.highlight(textStorage) }
@@ -192,9 +221,21 @@ final class EditorTextView: NSTextView {
         window?.invalidateCursorRects(for: self)
     }
 
+    /// Brings styling up to date with edits since the last pass.
+    func highlightEdits() {
+        if let edited = pendingEdit, let textStorage {
+            pendingEdit = nil
+            highlighter.baseDirectory = baseDirectoryProvider?() ?? nil
+            highlighter.resolveWikiLink = wikiLinkResolver
+            highlighter.highlight(textStorage, edited: edited)
+        }
+        typingAttributes = Theme.baseAttributes
+        window?.invalidateCursorRects(for: self)
+    }
+
     override func didChangeText() {
         super.didChangeText()
-        rehighlight()
+        highlightEdits()
     }
 
     // MARK: - WYSIWYG: the caret skips concealed markers
@@ -360,7 +401,7 @@ final class EditorTextView: NSTextView {
     override func copy(_ sender: Any?) {
         let sel = selectedRange()
         guard sel.length > 0 else { return }
-        rehighlight()
+        highlightEdits()
         let ns = string as NSString
         var copied = ""
         for range in visibleSourceRanges(in: sel) {
@@ -564,7 +605,7 @@ final class EditorTextView: NSTextView {
     private func replaceVisibleSelection(with replacement: String, deleting: Bool) {
         let selection = selectedRange()
         guard selection.length > 0 else { return }
-        rehighlight()
+        highlightEdits()
         var edits = visibleSourceRanges(in: selection)
         if replaceInsideSingleSpan(edits, selection: selection,
                                    replacement: replacement, deleting: deleting) {
@@ -874,7 +915,7 @@ final class EditorTextView: NSTextView {
     private func moveCaretOutsideInlineBoundaryForBreak() {
         let sel = selectedRange()
         guard sel.length == 0 else { return }
-        rehighlight()
+        highlightEdits()
         let spans = inlineSpans(around: sel.location)
         let atStart = spans.filter { span in
             visibleSourceRanges(in: span.content).first?.location == sel.location

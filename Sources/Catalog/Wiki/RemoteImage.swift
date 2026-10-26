@@ -83,7 +83,7 @@ struct RemoteImage: View {
 
     var body: some View {
         ZStack {
-            Rectangle().fill(Color.white.opacity(image == nil ? 0.05 : 0))
+            Rectangle().fill(WikiTheme.wash.opacity(image == nil ? 0.05 : 0))
             if let image {
                 Image(decorative: image, scale: 1)
                     .resizable()
@@ -165,7 +165,7 @@ struct ImageViewer: View {
                 }
                 Spacer()
                 if let caption, scale <= 1.01 {
-                    Text(caption)
+                    Text(WikiTheme.styled(caption))
                         .font(WikiTheme.body(bodyFamily, size: 15))
                         .foregroundStyle(WikiTheme.foreground.opacity(0.9))
                         .tint(WikiTheme.link)
@@ -180,7 +180,7 @@ struct ImageViewer: View {
             }
             .padding(20)
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
     }
 
     private var magnify: some Gesture {

@@ -141,7 +141,7 @@ struct PageActionsView: View {
         PageActions(outline: chrome.outline, contentsEnabled: chrome.hasOutline,
                     share: chrome.share, onJump: chrome.jump)
             .tint(WikiTheme.foreground)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(WikiTheme.colorScheme)
             .fixedSize()
     }
 }
@@ -152,7 +152,9 @@ struct PageActionsView: View {
 /// button that morphs into a chat panel, keeping its bottom-right corner
 /// and corner radius, and morphs back when minimized. The hosting view is
 /// always the open panel's size; it only takes clicks inside the button
-/// while closed.
+/// while closed. Every layer fills that size, so only the glass and its
+/// mask move: the panel's contents fade in where they sit, and the
+/// minimize button lands under the pointer that opened the panel.
 struct ChatDock: View {
     let chrome: WindowChrome
     let session: AgentSession
@@ -165,54 +167,58 @@ struct ChatDock: View {
     /// page's bottom edge.
     static let clearance: CGFloat = size + 10 + 20 + 10
     static let panelSize = CGSize(width: 360, height: 560)
-    static let morph = Animation.spring(response: 0.44, dampingFraction: 0.86)
+    static let morph = Animation.spring(response: 0.3, dampingFraction: 0.88)
 
     var body: some View {
         GeometryReader { proxy in
             let open = chrome.chatFloating
+            let full = proxy.size
+            let glass = open ? full : CGSize(width: Self.size, height: Self.size)
             let shape = RoundedRectangle(cornerRadius: Self.size / 2, style: .continuous)
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 // Glass alone doesn't reliably blur the AppKit text beneath;
                 // once open, a near-opaque backdrop keeps the chat legible.
                 WikiTheme.background.opacity(open ? 0.94 : 0)
-                if open {
-                    AgentPanel(session: session, style: .floating, actions: actions)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .transition(.opacity.animation(.easeOut(duration: open ? 0.22 : 0.12)))
-                } else {
-                    Button(action: chrome.toggleChat) {
-                        Image(systemName: "bubble.left")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(WikiTheme.foreground)
-                            .frame(width: Self.size, height: Self.size)
-                            .contentShape(shape)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Ask the Assistant (⌘J)")
-                    .accessibilityLabel("Assistant")
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .frame(width: glass.width, height: glass.height)
+                    .clipShape(shape)
+                    .glassEffect(.regular.interactive(!open), in: shape)
+                    .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
+                    .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
+                AgentPanel(session: session, style: .floating, actions: actions)
+                    .frame(width: full.width, height: full.height)
+                    .mask(alignment: .bottomTrailing) { shape.frame(width: glass.width, height: glass.height) }
+                    .opacity(open ? 1 : 0)
+                    .animation(chrome.chatMorphAnimated ? (open ? .easeOut(duration: 0.2) : .easeOut(duration: 0.1)) : nil,
+                               value: open)
+                    .allowsHitTesting(open)
+                Button(action: chrome.toggleChat) {
+                    Image(systemName: "bubble.left")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(WikiTheme.foreground)
+                        .frame(width: Self.size, height: Self.size)
+                        .contentShape(shape)
                 }
+                .buttonStyle(.plain)
+                .help("Ask the Assistant (⌘J)")
+                .accessibilityLabel("Assistant")
+                .opacity(open ? 0 : 1)
+                .scaleEffect(open ? 0.6 : 1)
+                .allowsHitTesting(!open)
+                .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
             }
-            .frame(width: open ? proxy.size.width : Self.size,
-                   height: open ? proxy.size.height : Self.size, alignment: .bottomTrailing)
-            .clipShape(shape)
-            .glassEffect(.regular.interactive(!open), in: shape)
-            .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
         .animation(chrome.chatMorphAnimated ? Self.morph : nil, value: chrome.chatFloating)
         .tint(WikiTheme.foreground)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
     }
 }
 
 /// Where a floating panel dragged to the window's right edge will dock.
-final class ChatDockHint: NSView {
+final class ChatDockHint: NSView, ThemeRefreshing {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = Theme.foreground.withAlphaComponent(0.10).cgColor
-        layer?.borderColor = Theme.foreground.withAlphaComponent(0.35).cgColor
+        applyTheme()
         layer?.borderWidth = 1
         layer?.cornerRadius = ChatDock.size / 2
         layer?.cornerCurve = .continuous
@@ -220,6 +226,11 @@ final class ChatDockHint: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func applyTheme() {
+        layer?.backgroundColor = Theme.foreground.withAlphaComponent(0.10).cgColor
+        layer?.borderColor = Theme.foreground.withAlphaComponent(0.35).cgColor
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -243,7 +254,7 @@ final class ChatDockHint: NSView {
 /// content), fading out below the bar. Installed only while content is
 /// under the tabs: a live backdrop otherwise keeps the window on the
 /// slower compositing path.
-final class PageGlassBackdrop: NSView {
+final class PageGlassBackdrop: NSView, ThemeRefreshing {
     private var glass: NSGlassEffectView?
     private let fade = CAGradientLayer()
 
@@ -273,14 +284,18 @@ final class PageGlassBackdrop: NSView {
 
     var isShowing: Bool { glass != nil }
 
+    func applyTheme() { glass?.tintColor = Self.tint }
+
+    /// A touch of the window's own tint keeps text over the glass legible.
+    private static var tint: NSColor { Theme.background.withAlphaComponent(0.35) }
+
     func setShowing(_ showing: Bool) {
         guard showing != isShowing else { return }
         if showing {
             let glass = NSGlassEffectView(frame: bounds)
             glass.autoresizingMask = [.width, .height]
             glass.cornerRadius = 0
-            // A touch of the window's own tint keeps text over the glass legible.
-            glass.tintColor = Theme.background.withAlphaComponent(0.35)
+            glass.tintColor = Self.tint
             glass.alphaValue = 0
             addSubview(glass)
             self.glass = glass
@@ -359,7 +374,7 @@ struct WikiTabView: View {
         .environment(page)
         .environment(\.openURL, OpenURLAction { page.handle($0) })
         .tint(WikiTheme.foreground)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
     }
 }
 
@@ -378,7 +393,7 @@ struct WikiBackButton: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
         .help("Back (⌘[)")
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(WikiTheme.colorScheme)
         .fixedSize()
     }
 }
@@ -396,7 +411,7 @@ struct WikiTitlePill: View {
             .frame(height: PageMetrics.control)
             .glassEffect(.regular, in: Capsule())
             .frame(maxWidth: 420)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(WikiTheme.colorScheme)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

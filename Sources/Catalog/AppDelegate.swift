@@ -27,6 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
             AgentBackend.preferred = backend
         }
+        // Scripting: `--theme plasma|dark|light|paper`.
+        if let index = CommandLine.arguments.firstIndex(of: "--theme"), CommandLine.arguments.indices.contains(index + 1),
+           let kind = ThemeKind(rawValue: CommandLine.arguments[index + 1].lowercased()) {
+            ThemeKind.current = kind
+        }
         buildMainMenu()
 
         let args = Array(CommandLine.arguments.dropFirst())
@@ -111,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).
