@@ -3,19 +3,18 @@ import QuartzCore
 
 final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, ThemeRefreshing {
     var onRefresh: (() -> Void)?
-    var onOpen: ((URL, Bool) -> Void)?
+    var onOpen: ((URL) -> Void)?
     var onToggleSidebar: (() -> Void)?
-    var onMediaMode: ((Bool) -> Void)?
+    var onBrowse: (() -> Void)?
     private let outline = SidebarOutlineView()
     private let scroll = SidebarScrollView()
     private let toggle = SidebarIconButton()
-    private let filesButton = SidebarIconButton()
-    private let mediaButton = SidebarIconButton()
+    private let browseButton = SidebarIconButton()
     /// The browsed folder's path, in the lower-left corner.
     private let pathIcon = NSImageView()
     private let pathLabel = NSTextField(labelWithString: "")
     private var root: FileNode?
-    var mediaMode = false { didSet { if let url = root?.url { setRoot(url) }; refreshControls() } }
+    var rootURL: URL? { root?.url }
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -24,8 +23,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         // laid out on the tab row's centerline (cornerPadding + 31pt row).
         for (button, symbol, label, action) in [
             (toggle, "sidebar.left", "Collapse sidebar", #selector(collapse)),
-            (filesButton, "doc", "Files", #selector(selectFiles)),
-            (mediaButton, "photo", "Media", #selector(selectMedia)),
+            (browseButton, FileBrowser.symbol, "Show as Icons", #selector(browse)),
         ] {
             SidebarIconButton.configure(button, symbol: symbol, label: label, target: self, action: action)
             addSubview(button)
@@ -68,8 +66,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         super.layout()
         let rowY = bounds.height - TabBarView.cornerPadding - 31
         toggle.frame = NSRect(x: TabBarView.cornerPadding, y: rowY, width: 30, height: 31)
-        filesButton.frame = NSRect(x: 55, y: rowY, width: 30, height: 31)
-        mediaButton.frame = NSRect(x: 93, y: rowY, width: 30, height: 31)
+        browseButton.frame = NSRect(x: bounds.width - FileBrowser.toggleInset - 30, y: rowY, width: 30, height: 31)
         let controlsHeight = TabBarView.cornerPadding + 31 + 8
         let footerHeight: CGFloat = 30
         pathIcon.frame = NSRect(x: 14, y: 9, width: 14, height: 13)
@@ -80,7 +77,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
                                                           height: max(0, bounds.height - controlsHeight - footerHeight))
     }
     func fadeInContents() {
-        SidebarTransition.fadeIn([filesButton, mediaButton, scroll, pathIcon, pathLabel])
+        SidebarTransition.fadeIn([browseButton, scroll, pathIcon, pathLabel])
     }
     func applyTheme() {
         refreshControls()
@@ -89,17 +86,13 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     private func refreshControls() {
         toggle.contentTintColor = Theme.secondary
+        browseButton.contentTintColor = Theme.secondary
         pathIcon.contentTintColor = Theme.secondary
         pathLabel.textColor = Theme.secondary
-        filesButton.contentTintColor = mediaMode ? Theme.secondary : Theme.foreground
-        mediaButton.contentTintColor = mediaMode ? Theme.foreground : Theme.secondary
-        filesButton.layer?.backgroundColor = Theme.wash.withAlphaComponent(mediaMode ? 0 : 0.08).cgColor
-        mediaButton.layer?.backgroundColor = Theme.wash.withAlphaComponent(mediaMode ? 0.08 : 0).cgColor
-        [toggle, filesButton, mediaButton].forEach { $0.needsDisplay = true }
+        [toggle, browseButton].forEach { $0.needsDisplay = true }
     }
     @objc private func collapse() { onToggleSidebar?() }
-    @objc private func selectFiles() { onMediaMode?(false) }
-    @objc private func selectMedia() { onMediaMode?(true) }
+    @objc private func browse() { onBrowse?() }
     func setRoot(_ url: URL) {
         let expanded = Set((0..<outline.numberOfRows).compactMap { row -> String? in
             guard let node = outline.item(atRow: row) as? FileNode, outline.isItemExpanded(node) else { return nil }
@@ -188,7 +181,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     private func contextMenu() -> NSMenu {
         let menu = NSMenu()
-        if !mediaMode, let directory = creationDirectory {
+        if let directory = creationDirectory {
             for (title, action) in [("New Folder…", #selector(newFolder(_:))), ("New File…", #selector(newFile(_:)))] {
                 let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
                 item.target = self
@@ -204,7 +197,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     @objc private func newMarkdown(_ sender: Any?) { promptForItem(.markdown, sender: sender) }
 
     private func promptForItem(_ kind: WorkspaceItemKind, sender: Any?) {
-        guard !mediaMode, let window,
+        guard let window,
               let directory = (sender as? NSMenuItem)?.representedObject as? URL ?? creationDirectory else { return }
         let alert = NSAlert()
         alert.messageText = kind == .folder ? "New Folder" : (kind == .markdown ? "New Markdown" : "New File")
@@ -225,7 +218,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
                     self.apply(Workspace.Change(root: Workspace.canonicalPath(root.url), directories: [Workspace.canonicalPath(directory)]))
                 }
                 self.reveal(url)
-                if kind != .folder { self.onOpen?(url, false) }
+                if kind != .folder { self.onOpen?(url) }
             } catch {
                 let errorAlert = NSAlert(error: error)
                 errorAlert.beginSheetModal(for: window)
@@ -259,13 +252,13 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     private func updateRootActions() {
         guard let root, let cell = outline.view(atColumn: 0, row: outline.row(forItem: root), makeIfNecessary: false) as? SidebarFileCell else { return }
-        cell.showsActions = !mediaMode && outline.isItemExpanded(root)
+        cell.showsActions = outline.isItemExpanded(root)
     }
     func outlineViewItemDidExpand(_ notification: Notification) { updateRootActions() }
     func outlineViewItemDidCollapse(_ notification: Notification) { updateRootActions() }
     private func children(_ item: Any?) -> [FileNode] {
         guard let node = item as? FileNode else { return root.map { [$0] } ?? [] }
-        return node.children.filter { !mediaMode || $0.isDirectory }
+        return node.children
     }
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { children(item).count }
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { children(item)[index] }
@@ -284,7 +277,7 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         cell.textField?.font = Theme.interfaceFont(size: 13.5)
         cell.textField?.textColor = Theme.foreground.withAlphaComponent(0.85)
         cell.toolTip = node.url.path
-        if isRoot { cell.showsActions = !mediaMode && outline.isItemExpanded(node) }
+        if isRoot { cell.showsActions = outline.isItemExpanded(node) }
         return cell
     }
     private func makeCell(_ identifier: NSUserInterfaceItemIdentifier, isRoot: Bool) -> SidebarFileCell {
@@ -309,9 +302,9 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     @objc private func clicked() {
         guard outline.clickedRow >= 0, let node = outline.item(atRow: outline.clickedRow) as? FileNode else { return }
-        if node.isDirectory && !mediaMode {
+        if node.isDirectory {
             if outline.isItemExpanded(node) { outline.collapseItem(node) } else { outline.expandItem(node) }
-        } else { onOpen?(node.url, node.isDirectory) }
+        } else { onOpen?(node.url) }
     }
 }
 

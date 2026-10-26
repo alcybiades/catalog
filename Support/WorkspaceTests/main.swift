@@ -28,17 +28,7 @@ NSGraphicsContext.restoreGraphicsState()
 try bitmap.representation(using: .png, properties: [:])!.write(to: imageURL)
 for n in 1...8 { try FileManager.default.copyItem(at: imageURL, to: root.appendingPathComponent("Media/Study \(n).png")) }
 
-let characters = root.appendingPathComponent("Media/Characters")
-let concepts = root.appendingPathComponent("Media/Characters/Concepts")
-try FileManager.default.createDirectory(at: concepts, withIntermediateDirectories: true)
-try FileManager.default.copyItem(at: imageURL, to: characters.appendingPathComponent("Portrait.png"))
-try FileManager.default.copyItem(at: imageURL, to: concepts.appendingPathComponent("Sketch.png"))
-try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("Media/Loop"), withDestinationURL: root)
-let groups = try MediaGallery.sections(in: root)
-check("parent galleries include descendant images", groups.reduce(0) { $0 + $1.images.count } == 11)
-check("gallery groups are sorted by containing directory", groups.map { FileReference.relativePath(to: $0.directory, from: root) } == ["Media", "Media/Characters", "Media/Characters/Concepts"])
-check("breadcrumb ancestors reach workspace root", MediaGallery.breadcrumbs(to: concepts.appendingPathComponent("Sketch.png"), root: root).map(\.lastPathComponent) == ["Studio", "Media", "Characters", "Concepts", "Sketch.png"])
-check("outside-workspace images use their actual parent", MediaGallery.breadcrumbs(to: source, root: characters).map(\.lastPathComponent) == ["Notes", "Start.md"])
+try "hidden".write(to: root.appendingPathComponent(".hidden"), atomically: true, encoding: .utf8)
 
 let markdown = FileReference.markdown(to: target, from: source)
 check("tag uses portable escaped Markdown", markdown == "[@Design \\[v2\\] #1 (final).md](Nested/Design%20%5Bv2%5D%20%231%20%28final%29.md)")
@@ -192,9 +182,8 @@ check("native titlebar buttons stay hidden", [NSWindow.ButtonType.closeButton, .
 check("open markdown", controller.open(url: source))
 let count = controller.documents.count
 check("open folder", controller.open(url: root))
-check("folder appends tab and keeps existing file", controller.documents.count == count + 1 && controller.documents[0].url == source)
+check("folder keeps its tabs and opens none", controller.documents.count == count && controller.documents[0].url == source)
 check("folder sets root", controller.workspace?.root.path == root.path)
-check("folder tab is gallery", controller.currentDocument.kind == .folder)
 check("open image", controller.open(url: imageURL, forceNewTab: true))
 check("image is read only", !controller.textView.isEditable)
 let bytes = try Data(contentsOf: imageURL)
@@ -206,7 +195,6 @@ controller.saveDocument(nil)
 check("save cannot overwrite binary", try Data(contentsOf: unknown) == Data([0, 255, 20, 19]))
 check("replace root", controller.open(url: root.appendingPathComponent("Media")))
 check("one active workspace replaced", controller.workspace?.root == root.appendingPathComponent("Media"))
-check("old folder tab survives", controller.documents.contains { $0.url?.path == root.path })
 controller.switchTab(to: 0)
 check("markdown editor restored", controller.textView.isEditable && controller.textView.string.contains("# Start"))
 controller.textView.insertText("extra", replacementRange: NSRange(location: controller.textView.string.utf16.count, length: 0))
@@ -219,30 +207,7 @@ func snapshot(_ name: String) {
     view.cacheDisplay(in: view.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/write-\(name).png"))
 }
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-controller.open(url: root.appendingPathComponent("Media"))
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-snapshot("gallery")
-let preview = controller.window!.contentView!.subviews.first { $0 is FilePreview } as! FilePreview
-check("gallery loads multiple collection sections", preview.sections.count == 3)
-let galleryScroll = preview.subviews.first { $0 is NSScrollView } as! NSScrollView
-let groupedCollection = galleryScroll.documentView as! NSCollectionView
-groupedCollection.scrollToItems(at: Set([IndexPath(item: 0, section: 1)]), scrollPosition: .top)
-snapshot("gallery-grouped")
-// Vertical wheel events over a path header must keep scrolling the gallery.
-let headerScroll = galleryDescendants(groupedCollection).compactMap { $0 as? NSScrollView }.first!
-func galleryDescendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + galleryDescendants($0) } }
-galleryScroll.contentView.scroll(to: .zero)
-let headerWheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -80, wheel2: 0, wheel3: 0)!
-headerScroll.scrollWheel(with: NSEvent(cgEvent: headerWheel)!)
-// The gallery scrolls on the legacy (non-responsive) path, where wheel deltas
-// apply via NSScrollingAnimator on a later display-link tick, not synchronously.
-let wheelDeadline = Date().addingTimeInterval(1)
-while galleryScroll.contentView.bounds.minY <= 0, Date() < wheelDeadline {
-    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
-}
-check("wheel over breadcrumbs scrolls parent gallery", galleryScroll.contentView.bounds.minY > 0)
-var galleryPosition = galleryScroll.contentView.bounds.origin
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
 let bar = controller.window!.contentView!.subviews.first { $0 is TabBarView }!
 let strip = bar.subviews.first { $0 is NSScrollView } as! NSScrollView
@@ -254,13 +219,56 @@ func headerButtonReceivesClicks(_ button: NSButton) -> Bool {
     let hit = frameView.hitTest(center)
     return hit === button || hit?.isDescendant(of: button) == true
 }
-for label in ["Collapse sidebar", "Files", "Media"] {
+for label in ["Collapse sidebar", "Show as Icons"] {
     let button = descendants(sidebarPane).compactMap { $0 as? NSButton }.first { $0.toolTip == label }!
     check("\(label) receives window hit tests", headerButtonReceivesClicks(button))
 }
+
+// MARK: - Icon browser
+
+let browser = controller.window!.contentView!.subviews.first { $0 is FileBrowser } as! FileBrowser
+descendants(sidebarPane).compactMap { $0 as? NSButton }.first { $0.toolTip == "Show as Icons" }!.performClick(nil)
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+snapshot("browser")
+check("icon browser covers the editor", controller.browsing && !browser.isHidden && browser.frame.minX == 0
+      && abs(browser.frame.maxX - controller.textView.enclosingScrollView!.frame.maxX) < 0.5)
+let names = browser.entries.map(\.url.lastPathComponent)
+check("browser lists folders first, like the sidebar", Array(names.prefix(2)) == ["Media", "Notes"] && names.contains("archive.bin"))
+check("browser skips hidden files", !names.contains { $0.hasPrefix(".") })
+func browserKey(_ code: UInt16, _ text: String) {
+    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                windowNumber: controller.window!.windowNumber, context: nil,
+                                characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+    browser.grid.keyDown(with: event)
+}
+browser.grid.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+browserKey(36, "\r")
+check("Return opens a folder inside the browser", browser.directory?.lastPathComponent == "Media" && browser.canGoBack)
+controller.wikiBack(nil)
+check("Back returns to the parent, selecting the folder left", browser.directory?.path == root.path
+      && browser.grid.selectionIndexPaths == [IndexPath(item: 0, section: 0)])
+let added = root.appendingPathComponent("Browser added.md")
+try "# Added\n".write(to: added, atomically: true, encoding: .utf8)
+Workspace.Change(root: Workspace.canonicalPath(root), directories: [Workspace.canonicalPath(root)]).post()
+check("browser follows workspace changes in place", browser.entries.contains { $0.url.lastPathComponent == added.lastPathComponent }
+      && browser.grid.numberOfItems(inSection: 0) == browser.entries.count)
+try FileManager.default.removeItem(at: added)
+browserKey(53, "\u{1b}")
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+check("Escape returns the browser to the sidebar", !controller.browsing && browser.isHidden
+      && controller.textView.enclosingScrollView!.alphaValue == 1 && sidebarPane.alphaValue == 1)
+controller.browse(root.appendingPathComponent("Media"))
+check("browsing a subfolder leads Back to the sidebar's folder", browser.directory?.lastPathComponent == "Media" && browser.canGoBack)
+let landscape = browser.entries.firstIndex { $0.url.lastPathComponent == "Landscape.png" }!
+browser.grid.selectionIndexPaths = [IndexPath(item: landscape, section: 0)]
+browserKey(36, "\r")
+check("opening a file collapses the browser into its tab", !controller.browsing && controller.currentDocument.url?.path == imageURL.path)
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
 let tab = descendants(strip).first { String(describing: type(of: $0)) == "TabItemView" }!
 check("sidebar controls align to tab centers", abs(control.convert(control.bounds, to: bar).midY - tab.convert(tab.bounds, to: bar).midY) < 0.5)
 check("tab viewport reaches window edge", abs(strip.frame.maxX - bar.bounds.width) < 0.5)
+// Enough tabs to overflow a narrow window.
+for n in 1...4 { controller.open(url: root.appendingPathComponent("Media/Study \(n).png"), forceNewTab: true) }
 controller.window?.setContentSize(NSSize(width: 640, height: 720))
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 controller.switchTab(to: controller.current)
@@ -306,28 +314,14 @@ snapshot("tabs-overflow")
 controller.window?.setContentSize(NSSize(width: 960, height: 720))
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 
-galleryPosition = galleryScroll.contentView.bounds.origin
 controller.open(url: imageURL, forceNewTab: true)
 snapshot("image")
-let imageCrumbs = preview.subviews.first { $0 is BreadcrumbBar } as! BreadcrumbBar
-check("media images show breadcrumbs", !imageCrumbs.isHidden)
-let mediaCrumb = descendants(imageCrumbs).compactMap { $0 as? NSButton }.first { $0.title == "Media" }!
-let beforeBack = controller.documents.count
-mediaCrumb.performClick(nil)
-check("breadcrumb returns to existing gallery tab", controller.currentDocument.kind == .folder && controller.currentDocument.url?.path == root.appendingPathComponent("Media").path && controller.documents.count == beforeBack)
-check("breadcrumb navigation preserves workspace", controller.workspace?.root.path == root.path)
-RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-check("back to gallery restores scroll position", abs(galleryScroll.contentView.bounds.origin.y - galleryPosition.y) < 1)
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
-controller.open(url: imageURL, forceNewTab: true)
-check("Files image view has no heading or breadcrumb", imageCrumbs.isHidden)
-snapshot("image-files")
 
-controller.restoreWorkspace(root: root, collapsed: true, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: true, width: 220)
 controller.switchTab(to: 0)
 snapshot("collapsed")
 check("collapsed body uses full width", abs(controller.textView.enclosingScrollView!.frame.minX) < 0.5)
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 let sidebarView = controller.window!.contentView!.subviews.first { $0 is FolderSidebar }!
 check("expanded sidebar has saved width", sidebarView.frame.width == 220)
@@ -364,9 +358,10 @@ check("close folder keeps tabs and disables sidebar", controller.workspace == ni
 let restored = EditorWindowController(app: nil)
 restored.restoreTab(url: root)
 restored.restoreTab(url: imageURL)
-restored.restoreWorkspace(root: root.appendingPathComponent("Media"), collapsed: true, width: 270, media: true)
-check("restored folder tabs don't replace root", restored.workspace?.root == root.appendingPathComponent("Media") && restored.documents.count == 2)
-check("sidebar preferences restore", restored.sidebarCollapsed && restored.sidebarWidth == 270 && restored.mediaMode)
+restored.restoreWorkspace(root: root.appendingPathComponent("Media"), collapsed: true, width: 270)
+check("restored sessions skip old folder tabs", restored.workspace?.root == root.appendingPathComponent("Media")
+      && !restored.documents.contains { $0.kind == .folder } && restored.documents.contains { $0.url?.path == imageURL.path })
+check("sidebar preferences restore", restored.sidebarCollapsed && restored.sidebarWidth == 270)
 check("persist preview tabs safely", restored.persistAllDrafts())
 // A large folder should create work for the viewport, not for every image.
 let manyImages = fixture.appendingPathComponent("Many images")
@@ -375,38 +370,34 @@ for index in 0..<500 {
     try FileManager.default.copyItem(at: imageURL, to: manyImages.appendingPathComponent("Image \(index).png"))
 }
 let beforeDecodes = ImageLoader.shared.statistics.thumbnailDecodes
-let beforeGallery = Date()
-controller.open(url: manyImages)
-let galleryDeadline = Date().addingTimeInterval(10)
-while preview.sections.first?.images.count != 500 && Date() < galleryDeadline {
-    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-}
-RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-let visible = groupedCollection.visibleItems()
+controller.browse(manyImages)
+RunLoop.current.run(until: Date().addingTimeInterval(1))
+let visible = browser.grid.visibleItems()
 let newDecodes = ImageLoader.shared.statistics.thumbnailDecodes - beforeDecodes
-let visibleThumbnails = visible.flatMap { galleryDescendants($0.view).compactMap { $0 as? GalleryThumbnailView } }
-check("visible thumbnails have composited pixels", !visibleThumbnails.isEmpty && visibleThumbnails.allSatisfy { $0.image != nil && $0.layer?.contents != nil })
+let visibleThumbnails = visible.flatMap { descendants($0.view).compactMap { $0 as? ThumbnailView } }
+check("browser lists every image", browser.entries.count == 500)
+check("visible thumbnails have composited pixels", !visibleThumbnails.isEmpty && visibleThumbnails.allSatisfy { $0.layer?.contents != nil })
 check("thumbnail presentation preserves aspect ratio", visibleThumbnails.allSatisfy { $0.layer?.contentsGravity == .resizeAspect })
 check("thumbnail filenames remain accessible", visibleThumbnails.allSatisfy { $0.accessibilityLabel()?.hasPrefix("Image ") == true })
-check("large gallery indexes all images", preview.sections.first?.images.count == 500)
-check("large gallery only decodes visible cells", !visible.isEmpty && visible.count < 40 && newDecodes <= visible.count + 4)
-check("large gallery pending work is bounded by viewport", ImageLoader.shared.pendingThumbnailCount <= visible.count)
-print(String(format: "GALLERY: 500 files, %d visible cells, %d thumbnail decodes, %.3fs including 0.3s settle", visible.count, newDecodes, Date().timeIntervalSince(beforeGallery)))
-groupedCollection.scrollToItems(at: Set([IndexPath(item: 499, section: 0)]), scrollPosition: .bottom)
+check("large folders only decode visible cells", !visible.isEmpty && visible.count < 60 && newDecodes <= visible.count + 4)
+check("pending thumbnail work is bounded by the viewport", ImageLoader.shared.pendingThumbnailCount <= visible.count)
+print("BROWSER: 500 images, \(visible.count) visible cells, \(newDecodes) thumbnail decodes")
+browser.grid.scrollToItems(at: [IndexPath(item: 499, section: 0)], scrollPosition: .bottom)
 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-let nowVisible = groupedCollection.visibleItems()
-check("offscreen gallery cells release decoded pixels", visible.filter { old in !nowVisible.contains { $0 === old } }.allSatisfy { old in
-    galleryDescendants(old.view).compactMap { $0 as? GalleryThumbnailView }.allSatisfy { $0.image == nil && $0.layer?.contents == nil }
+let nowVisible = browser.grid.visibleItems()
+check("offscreen cells release decoded pixels", visible.filter { old in !nowVisible.contains { $0 === old } }.allSatisfy { old in
+    descendants(old.view).compactMap { $0 as? ThumbnailView }.allSatisfy { $0.image == nil && $0.layer?.contents == nil }
 })
+controller.setBrowsing(false, animated: false)
+let preview = controller.window!.contentView!.subviews.first { $0 is FilePreview } as! FilePreview
 controller.open(url: imageURL, forceNewTab: true)
 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
 let originalImageView = preview.subviews.first { $0 is NSImageView } as! NSImageView
 check("full viewer loads original separately", originalImageView.image != nil)
 controller.switchTab(to: 0)
-check("leaving viewer releases original pixels", originalImageView.image == nil && preview.sections.isEmpty)
-check("leaving gallery cancels pending thumbnails", ImageLoader.shared.pendingThumbnailCount == 0)
+check("leaving viewer releases original pixels", originalImageView.image == nil)
 // Sidebar clicks navigate in a tab belonging to the displayed workspace.
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 let freshA = root.appendingPathComponent("Notes/FreshA.md")
 let freshB = root.appendingPathComponent("Notes/FreshB.md")
 try "# A\n".write(to: freshA, atomically: true, encoding: .utf8)
@@ -438,7 +429,7 @@ try "Outside note".write(to: outsideURL, atomically: true, encoding: .utf8)
 let outsideDocument = Document(url: outsideURL, content: "Outside note")
 let navigation = EditorWindowController(documents: [outsideDocument,
     Document(url: freshA, content: "# A\n"), Document(url: freshB, content: "# B\n")], app: nil)
-navigation.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+navigation.restoreWorkspace(root: root, collapsed: false, width: 220)
 navigation.switchTab(to: 2)
 navigation.switchTab(to: 1)
 navigation.switchTab(to: 0)
@@ -470,13 +461,7 @@ navigation.openInCurrentTab(imageURL)
 check("blank unrelated tab stays open while associated tab shows an image",
       navigation.documents.count == 3 && navigation.documents[2] === blankDocument
       && navigation.current == 1 && navigation.currentDocument.kind == .image)
-navigation.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-navigation.switchTab(to: 0)
-navigation.openInCurrentTab(root)
-check("media folder navigation reuses associated tab and preserves sidebar root",
-      navigation.current == 1 && navigation.currentDocument.url?.path == root.path
-      && navigation.documents[0] === outsideDocument && navigation.workspace?.root.path == root.path)
-navigation.restoreWorkspace(root: outsideRoot, collapsed: false, width: 220, media: false)
+navigation.restoreWorkspace(root: outsideRoot, collapsed: false, width: 220)
 navigation.openInCurrentTab(outsideURL)
 navigation.switchTab(to: 1)
 let anotherOutside = outsideRoot.appendingPathComponent("Another.md")
@@ -484,11 +469,11 @@ try "Another note".write(to: anotherOutside, atomically: true, encoding: .utf8)
 navigation.openInCurrentTab(anotherOutside)
 check("changing sidebar root re-evaluates which tabs belong to it",
       navigation.current == 0 && navigation.currentDocument.url == anotherOutside
-      && navigation.documents[1].url?.path == root.path)
+      && navigation.documents[1].url?.path == imageURL.path)
 navigation.window?.orderOut(nil)
 
 // Creation controls follow the selected directory and survive tree refreshes.
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 let creationSidebar = sidebarPane as! FolderSidebar
 let tree = descendants(creationSidebar).compactMap { $0 as? NSOutlineView }.first!
@@ -537,9 +522,6 @@ let contextEvent = NSEvent.mouseEvent(with: .rightMouseDown, location: contextPo
 let creationMenu = tree.menu(for: contextEvent)!
 check("right click targets clicked directory", creationSidebar.creationDirectory?.standardizedFileURL.path == notes.standardizedFileURL.path && (creationMenu.items.first?.representedObject as? URL)?.standardizedFileURL.path == notes.standardizedFileURL.path)
 check("Files context menu offers file and folder creation", creationMenu.items.contains { $0.title == "New File…" } && creationMenu.items.contains { $0.title == "New Folder…" })
-creationSidebar.mediaMode = true
-check("Media mode hides creation actions", rootActions().allSatisfy(\.isHidden) && tree.menu(for: contextEvent)?.items.count == 1)
-creationSidebar.mediaMode = false
 tree.collapseItem(tree.item(atRow: 0))
 tree.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 let rootContextPoint = tree.convert(NSPoint(x: 60, y: tree.rect(ofRow: 0).midY), to: nil)
@@ -585,12 +567,8 @@ expandControl.performClick(nil)
 check("expansion places sidebar at its final width immediately", abs(creationSidebar.frame.width - expandedWidth) < 0.5)
 settleSheet()
 check("animated expansion restores sidebar width", !creationSidebar.isHidden && abs(creationSidebar.frame.width - expandedWidth) < 0.5)
-for label in ["Files", "Media"] {
-    let button = descendants(creationSidebar).compactMap { $0 as? NSButton }.first { $0.toolTip == label }!
-    check("\(label) receives clicks after expanding", headerButtonReceivesClicks(button))
-    button.performClick(nil)
-    check("\(label) switches sidebar mode", controller.mediaMode == (label == "Media"))
-}
+let showAsIcons = descendants(creationSidebar).compactMap { $0 as? NSButton }.first { $0.toolTip == "Show as Icons" }!
+check("Show as Icons receives clicks after expanding", headerButtonReceivesClicks(showAsIcons))
 control.performClick(nil)
 expandControl.performClick(nil)
 settleSheet()
@@ -598,7 +576,7 @@ check("rapid sidebar toggles settle expanded", !controller.sidebarCollapsed && !
 
 // MARK: - Following links from the editor
 
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 check("open the link fixture", controller.open(url: links, forceNewTab: true))
 let editor: EditorTextView = controller.textView
 editor.layoutManager?.ensureLayout(for: editor.textContainer!)

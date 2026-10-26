@@ -396,8 +396,6 @@ final class AgentConversation: Identifiable {
             }
         case .image:
             lines.append("Open tab: the image \(context.fileURL.map(tools.display) ?? context.title) (attached)")
-        case .folder:
-            lines.append("Open tab: the image gallery of \(context.fileURL.map(tools.display) ?? context.title)")
         case .home, .other:
             lines.append("Open tab: \(context.title) (nothing is open)")
         }
@@ -511,8 +509,6 @@ final class AgentConversation: Identifiable {
             }
         case .image:
             lines.append("Open tab: the image \(context.fileURL?.path ?? context.title)" + (backend.isCodex ? " (attached)" : " (read it to see it)"))
-        case .folder:
-            lines.append("Open tab: the image gallery of \(context.fileURL?.path ?? context.title)")
         case .home, .other:
             lines.append("Open tab: \(context.title) (nothing is open)")
         }

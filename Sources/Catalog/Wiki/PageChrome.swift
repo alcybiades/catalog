@@ -408,10 +408,10 @@ struct WikiTabView: View {
 
 /// Wikipedia's Back button, at the start of the bar under the tabs.
 struct WikiBackButton: View {
-    let chrome: WindowChrome
+    let action: () -> Void
 
     var body: some View {
-        Button { chrome.page?.goBack() } label: {
+        Button(action: action) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(WikiTheme.foreground)

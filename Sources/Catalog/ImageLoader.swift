@@ -3,21 +3,6 @@ import CryptoKit
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Immutable rasters prepared on the gallery scan queue before cells appear.
-/// Never ask AppKit to rasterize a symbol while scrolling or reusing a cell.
-struct GallerySymbols {
-    let loading: CGImage?
-    let failed: CGImage?
-    static let shared: GallerySymbols = {
-        precondition(!Thread.isMainThread)
-        func raster(_ name: String) -> CGImage? {
-            let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-            return symbol?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        }
-        return GallerySymbols(loading: raster("photo"), failed: raster("exclamationmark.triangle"))
-    }()
-}
-
 /// Owned by a visible cell/viewer. Cancellation also removes its completion,
 /// so a long scroll never leaves a queue of requests retaining old cells.
 final class ImageRequest {
@@ -115,7 +100,7 @@ private final class ThumbnailDiskCache {
     }
 }
 
-/// Separate budgets and queues: opening an original never waits behind gallery
+/// Separate budgets and queues: opening an original never waits behind browser
 /// thumbnails, and original pixels never enter either thumbnail cache.
 final class ImageLoader {
     static let shared = ImageLoader()
