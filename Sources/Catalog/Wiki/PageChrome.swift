@@ -174,14 +174,18 @@ struct ChatDock: View {
             let glass = open ? full : CGSize(width: Self.size, height: Self.size)
             let shape = RoundedRectangle(cornerRadius: Self.size / 2, style: .continuous)
             ZStack {
-                // Glass alone doesn't reliably blur the AppKit text beneath;
-                // once open, a near-opaque backdrop keeps the chat legible.
-                WikiTheme.background.opacity(open ? 0.94 : 0)
-                    .frame(width: glass.width, height: glass.height)
-                    .clipShape(shape)
-                    .glassEffect(.regular.interactive(!open), in: shape)
-                    .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
-                    .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
+                // SwiftUI glass this large doesn't blur the page beneath, so
+                // the open panel crossfades to AppKit glass.
+                ZStack {
+                    Color.clear
+                        .glassEffect(.regular.interactive(), in: shape)
+                        .opacity(open ? 0 : 1)
+                    PanelGlass(tint: Self.panelTint)
+                        .opacity(open ? 1 : 0)
+                }
+                .frame(width: glass.width, height: glass.height)
+                .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
+                .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
                 AgentPanel(session: session, style: .floating, actions: actions)
                     .frame(width: full.width, height: full.height)
                     .mask(alignment: .bottomTrailing) { shape.frame(width: glass.width, height: glass.height) }
@@ -209,6 +213,31 @@ struct ChatDock: View {
         .tint(WikiTheme.foreground)
         .preferredColorScheme(WikiTheme.colorScheme)
     }
+
+    /// The window's own tint keeps the chat legible over the page; opaque
+    /// themes tint more, so the glass reads as their paper.
+    private static var panelTint: NSColor {
+        let palette = Theme.palette
+        return palette.background.withAlphaComponent(palette.backgroundOpacity < 1 ? 0.35 : 0.6)
+    }
+}
+
+/// The open panel's glass, rounded like the closed button.
+private struct PanelGlass: NSViewRepresentable {
+    let tint: NSColor
+
+    /// Leaves clicks to the SwiftUI panel drawn over it.
+    final class Glass: NSGlassEffectView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> Glass {
+        let glass = Glass()
+        glass.cornerRadius = ChatDock.size / 2
+        return glass
+    }
+
+    func updateNSView(_ glass: Glass, context: Context) { glass.tintColor = tint }
 }
 
 /// Where a floating panel dragged to the window's right edge will dock.
