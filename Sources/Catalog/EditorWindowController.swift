@@ -23,8 +23,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let preview = FilePreview()
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarAnimationID: UUID?
+    /// The folder the user opened. Without one, the sidebar browses
+    /// ~/Documents, starting collapsed.
     private(set) var workspace: Workspace?
-    private(set) var sidebarCollapsed = false
+    private(set) var sidebarCollapsed = true
     private(set) var sidebarWidth: CGFloat = 220
     private(set) var mediaMode = false
     private var previewOrigin: NSRect?
@@ -393,6 +395,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         NotificationCenter.default.addObserver(
             self, selector: #selector(agentDidModifyFiles(_:)), name: .agentDidModifyFiles, object: nil)
 
+        sidebar.setRoot(AgentSession.defaultDirectory)
         updateSidebar()
         updateAgentPanel()
         textView.rehighlight()
@@ -775,8 +778,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     private func updateSidebar(animated: Bool = false) {
         guard animated || sidebarAnimationID == nil, let content = window?.contentView else { return }
-        let visible = workspace != nil
-        let expanded = visible && !sidebarCollapsed
+        let visible = true
+        let expanded = !sidebarCollapsed
         let width = min(sidebarWidth, max(150, content.bounds.width - 240))
         let animate = animated && visible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let animationID = UUID()
@@ -803,11 +806,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
     }
 
-    func restoreWorkspace(root: URL, collapsed: Bool, width: CGFloat, media: Bool) {
+    /// Restores the sidebar: browsing `root`, or ~/Documents without one.
+    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat, media: Bool) {
         textView.dismissReferences()
-        textView.referencesEnabled = true
-        workspace = Workspace(root: root)
-        sidebar.setRoot(root)
+        textView.referencesEnabled = root != nil
+        workspace = root.map(Workspace.init(root:))
+        sidebar.setRoot(root ?? AgentSession.defaultDirectory)
         sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600)); mediaMode = media
         sidebar.mediaMode = media
         updateSidebar()
@@ -825,7 +829,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.dismissReferences()
         textView.referencesEnabled = false
         workspace = nil
+        sidebar.setRoot(AgentSession.defaultDirectory)
         mediaMode = false
+        sidebar.mediaMode = false
         updateSidebar()
         refreshChrome()
     }
@@ -1585,7 +1591,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             if doc.kind == .markdown { reloadFromDisk(doc) }
             if doc === currentDocument { changedCurrent = true }
         }
-        if workspace != nil { sidebar.refresh() }
+        sidebar.refresh()
         refreshChrome()
         if changedCurrent { flashStatus("updated by assistant") }
     }
@@ -1662,6 +1668,8 @@ extension EditorWindowController: NSMenuItemValidation {
         case #selector(toggleAgent(_:)):
             item.title = agentOpen ? "Hide Assistant" : "Show Assistant"
             return true
+        case #selector(closeFolder(_:)):
+            return workspace != nil
         case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
             return currentDocument.kind == .markdown
         default:

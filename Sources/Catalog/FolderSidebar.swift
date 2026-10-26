@@ -11,6 +11,9 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     private let toggle = SidebarIconButton()
     private let filesButton = SidebarIconButton()
     private let mediaButton = SidebarIconButton()
+    /// The browsed folder's path, in the lower-left corner.
+    private let pathIcon = NSImageView()
+    private let pathLabel = NSTextField(labelWithString: "")
     private var root: FileNode?
     var mediaMode = false { didSet { if let url = root?.url { setRoot(url) }; refreshControls() } }
     override init(frame: NSRect) {
@@ -50,6 +53,14 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         addSubview(scroll)
         outline.contextMenu = { [weak self] in self?.contextMenu() }
         scroll.contextMenu = { [weak self] in self?.contextMenu() }
+        pathIcon.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        pathIcon.symbolConfiguration = .init(pointSize: 10, weight: .regular)
+        pathIcon.contentTintColor = Theme.secondary
+        pathLabel.textColor = Theme.secondary
+        pathLabel.lineBreakMode = .byTruncatingHead
+        pathLabel.font = Theme.interfaceFont(size: 10.5)
+        addSubview(pathIcon)
+        addSubview(pathLabel)
     }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
@@ -59,11 +70,16 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         filesButton.frame = NSRect(x: 55, y: rowY, width: 30, height: 31)
         mediaButton.frame = NSRect(x: 93, y: rowY, width: 30, height: 31)
         let controlsHeight = TabBarView.cornerPadding + 31 + 8
+        let footerHeight: CGFloat = 30
+        pathIcon.frame = NSRect(x: 14, y: 9, width: 14, height: 13)
+        let labelHeight = ceil(pathLabel.intrinsicContentSize.height)
+        pathLabel.frame = NSRect(x: 32, y: 15.5 - labelHeight / 2, width: max(0, bounds.width - 46), height: labelHeight)
         // Extra trailing inset keeps rows clear of the resize divider.
-        scroll.frame = bounds.width < 16 ? .zero : NSRect(x: 6, y: 8, width: bounds.width - 16, height: max(0, bounds.height - controlsHeight - 8))
+        scroll.frame = bounds.width < 16 ? .zero : NSRect(x: 6, y: footerHeight, width: bounds.width - 16,
+                                                          height: max(0, bounds.height - controlsHeight - footerHeight))
     }
     func fadeInContents() {
-        SidebarTransition.fadeIn([filesButton, mediaButton, scroll])
+        SidebarTransition.fadeIn([filesButton, mediaButton, scroll, pathIcon, pathLabel])
     }
     private func refreshControls() {
         toggle.contentTintColor = Theme.secondary
@@ -84,6 +100,8 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
         let sameRoot = root?.url.standardizedFileURL == url.standardizedFileURL
         let selected = (outline.item(atRow: outline.selectedRow) as? FileNode)?.url
         root = FileNode(url)
+        pathLabel.stringValue = (url.path as NSString).abbreviatingWithTildeInPath
+        pathLabel.toolTip = url.path
         outline.reloadData()
         if !sameRoot, let root { outline.expandItem(root) }
         var row = 0
@@ -96,6 +114,8 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     @objc func refresh() { if let url = root?.url { setRoot(url); onRefresh?() } }
     func refreshFont() {
+        pathLabel.font = Theme.interfaceFont(size: 10.5)
+        needsLayout = true
         outline.reloadData()
         updateRootActions()
     }
