@@ -360,24 +360,19 @@ enum Theme {
     }
 
     static let defaultFontFamily = "Hoefler Text"
-    /// Chrome keeps its console face even though notes now default to a serif.
-    static let defaultInterfaceFontFamily = "Classic Console Neue"
+    static let defaultInterfaceFontFamily = "Helvetica"
+    static let interfaceFontKey = "interfaceFontFamily"
 
     static var fontFamily: String {
         get { AppState.defaults.string(forKey: "fontFamily") ?? defaultFontFamily }
         set { AppState.defaults.set(newValue, forKey: "fontFamily") }
     }
 
-    /// Font for app chrome: sidebar, tabs, status, pickers, and other custom
-    /// interface labels. Users who chose a body family inherit it until they
-    /// explicitly choose a separate interface family.
+    /// Font for app chrome: sidebar, tabs, status, pickers, the home page's
+    /// actions and search, and other custom interface labels.
     static var interfaceFontFamily: String {
-        get {
-            AppState.defaults.string(forKey: "interfaceFontFamily")
-                ?? AppState.defaults.string(forKey: "fontFamily")
-                ?? defaultInterfaceFontFamily
-        }
-        set { AppState.defaults.set(newValue, forKey: "interfaceFontFamily") }
+        get { AppState.defaults.string(forKey: interfaceFontKey) ?? defaultInterfaceFontFamily }
+        set { AppState.defaults.set(newValue, forKey: interfaceFontKey) }
     }
 
     private static let fallbackFontNames = ["ClassicConsoleNeue", "JetBrainsMono-Regular", "SFMono-Regular", "Menlo"]

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The first page of a window and of every new Wikipedia tab. As the home
@@ -6,11 +7,13 @@ import SwiftUI
 struct HomeView: View {
     @Environment(WikiPage.self) private var page
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
+    /// Settings' interface font; read here so the page restyles live.
+    @AppStorage(Theme.interfaceFontKey, store: AppState.defaults) private var interfaceFamily = Theme.defaultInterfaceFontFamily
 
     @State private var query = ""
     @State private var appeared = false
     @State private var recentFiles: [URL] = []
-    @State private var actionsWidth: CGFloat = 0
+    @State private var actionsSize: CGSize = .zero
     @State private var suggestions: [String] = []
     @State private var highlighted: Int?
     @FocusState private var searchFocused: Bool
@@ -26,16 +29,16 @@ struct HomeView: View {
                     VStack(spacing: 20) {
                         if isLauncher {
                             launcherActions
-                                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { actionsWidth = $0 }
+                                .onGeometryChange(for: CGSize.self) { $0.size } action: { actionsSize = $0 }
                         }
                         // Spans the action pills exactly, or a fixed column
                         // on a Wikipedia tab.
                         // Lays out at field height; the open suggestion list
                         // draws over the content below rather than pushing it.
                         Color.clear
-                            .frame(height: Self.fieldHeight)
+                            .frame(height: fieldHeight)
                             .overlay(alignment: .top) { searchField.fixedSize(horizontal: false, vertical: true) }
-                            .frame(width: isLauncher && actionsWidth > 0 ? actionsWidth : nil)
+                            .frame(width: isLauncher && actionsSize.width > 0 ? actionsSize.width : nil)
                             .frame(maxWidth: isLauncher ? nil : 460)
                     }
                     .zIndex(1)
@@ -74,7 +77,7 @@ struct HomeView: View {
                 .foregroundStyle(WikiTheme.heading.gradient)
                 .symbolEffect(.bounce.down, options: .nonRepeating, value: appeared)
             Text(isLauncher ? "Catalog" : "Encyclopedia")
-                .font(WikiTheme.body(bodyFamily, size: 46).weight(.semibold))
+                .font(.custom("Hoefler Text", fixedSize: 46).weight(.semibold))
                 .foregroundStyle(WikiTheme.heading)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
@@ -88,16 +91,17 @@ struct HomeView: View {
         let expanded = !suggestions.isEmpty
         // Rounded like a capsule at field height; suggestions extend the
         // same shape downward instead of floating as a separate card.
-        let shape = RoundedRectangle(cornerRadius: Self.fieldHeight / 2, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: fieldHeight / 2, style: .continuous)
         return VStack(spacing: 0) {
             HStack(spacing: 9) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(searchFocused ? WikiTheme.foreground : WikiTheme.secondary)
                 TextField("Search Wikipedia", text: $query)
                     .textFieldStyle(.plain)
-                    .font(WikiTheme.body(bodyFamily, size: 16))
+                    .font(WikiTheme.interface(interfaceFamily, size: 16))
                     .foregroundStyle(WikiTheme.foreground)
+                    .offset(y: capCentering)
                     .focused($searchFocused)
                     .autocorrectionDisabled()
                     .onSubmit(go)
@@ -122,7 +126,7 @@ struct HomeView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .frame(height: Self.fieldHeight)
+            .frame(height: fieldHeight)
             .contentShape(Rectangle())
             .onTapGesture { searchFocused = true }
 
@@ -143,7 +147,18 @@ struct HomeView: View {
         .task(id: query) { await loadSuggestions() }
     }
 
-    private static let fieldHeight: CGFloat = 42
+    /// The text field centers its line box (ascender to descender), which
+    /// seats capitals high; this moves their middle to the field's middle.
+    private var capCentering: CGFloat {
+        guard let font = NSFontManager.shared.font(withFamily: WikiTheme.interfaceFamily(interfaceFamily),
+                                                   traits: [], weight: 5, size: 16) else { return 0 }
+        return (max(0, font.capHeight - font.ascender - font.descender)).rounded() / 2
+    }
+
+    /// As tall as the action pills (so the same capsule), whatever the font.
+    private var fieldHeight: CGFloat {
+        isLauncher && actionsSize.height > 0 ? actionsSize.height : 44
+    }
 
     /// Article titles starting with the query; ↑/↓ pick one, Return opens it.
     private var suggestionRows: some View {
@@ -155,7 +170,7 @@ struct HomeView: View {
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(WikiTheme.secondary)
                         Text(title)
-                            .font(WikiTheme.body(bodyFamily, size: 16))
+                            .font(WikiTheme.interface(interfaceFamily, size: 16))
                             .foregroundStyle(WikiTheme.foreground)
                             .lineLimit(1)
                     }
@@ -209,10 +224,10 @@ struct HomeView: View {
                 Label("Open File", systemImage: "doc")
             }
         }
-        .buttonStyle(.glassPill)
-        // The reading font, like the title and search; each pill keeps its
-        // natural width, and the search field spans the row.
-        .font(WikiTheme.body(bodyFamily, size: 16))
+        .buttonStyle(GlassPillStyle(horizontal: 20, vertical: 12))
+        // Each pill keeps its natural width in the interface font, and the
+        // search field spans the row.
+        .font(WikiTheme.interface(interfaceFamily, size: 16))
         .lineLimit(1)
         .fixedSize()
         .opacity(appeared ? 1 : 0)
@@ -241,7 +256,7 @@ struct HomeView: View {
                        onForget: ((String) -> Void)? = nil) -> some View {
         VStack(spacing: 10) {
             Text(heading)
-                .font(WikiTheme.interface(size: 11, weight: .semibold))
+                .font(WikiTheme.interface(interfaceFamily, size: 11, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.8)
                 .foregroundStyle(WikiTheme.dim)
@@ -275,7 +290,7 @@ struct HomeView: View {
 
     private var footer: some View {
         Text("Articles from Wikipedia · CC BY-SA 4.0")
-            .font(WikiTheme.interface(size: 11))
+            .font(WikiTheme.interface(interfaceFamily, size: 11))
             .foregroundStyle(WikiTheme.dim)
             .padding(.bottom, 16)
             .padding(.top, 24)

@@ -226,11 +226,14 @@ struct AspectFitLayout: Layout {
 /// A neutral Liquid Glass capsule. (The system `.glass` style picks up the
 /// accent tint on macOS; this looks the same on both platforms.)
 struct GlassPillStyle: ButtonStyle {
+    var horizontal: CGFloat = 16
+    var vertical: CGFloat = 9
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(WikiTheme.foreground)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
+            .padding(.horizontal, horizontal)
+            .padding(.vertical, vertical)
             .contentShape(Capsule())
             .glassEffect(.regular.interactive(), in: Capsule())
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
