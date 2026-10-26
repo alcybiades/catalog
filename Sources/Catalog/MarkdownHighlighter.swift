@@ -76,6 +76,9 @@ extension NSAttributedString.Key {
     static let mdMarker = NSAttributedString.Key("mdMarker")
     /// Carries an ImageEmbed for image syntax; drawn by the layout manager.
     static let mdImage = NSAttributedString.Key("mdImage")
+    /// Set on lines that leave a fenced code block open, so an incremental
+    /// pass can resume mid-document and knows when a fence change settles.
+    static let mdCodeBlock = NSAttributedString.Key("mdCodeBlock")
 }
 
 /// A resolved image embed carried as an attribute on the (concealed)
@@ -117,6 +120,7 @@ final class MarkdownHighlighter {
     static let linkText = MarkdownHighlighter.regex(#"\[((?:\\.|[^\]\\\n])*)\]\(([^)\n]*)\)"#)
     static let colorSpan = MarkdownHighlighter.regex(#"<span style="color:#([0-9A-Fa-f]{6})">(.+?)</span>"#)
     static let halfOpacitySpan = MarkdownHighlighter.regex(#"<span style="opacity:0\.5">(.+?)</span>"#)
+    private static let labelEscape = MarkdownHighlighter.regex(#"\\(?=[\[\]\\])"#)
 
     /// Regex enumeration normally skips to the end of a rejected match. An
     /// apparent italic opener can be a star owned by a preceding bold
@@ -293,61 +297,99 @@ final class MarkdownHighlighter {
 
     private var isHighlighting = false
 
-    /// Extra width added (via kerning) to the space after a list/quote
-    /// marker so the gap is a consistent half-em. Proportional fonts have
-    /// narrow spaces (~0.25em in Hoefler), which makes the gap after a
-    /// bullet look cramped; monospace fonts need no correction.
-    private var markerKern: CGFloat = 0
+    /// Fonts, semantic colors and paragraph styles for a pass. Theme's
+    /// getters hit UserDefaults or NSFontManager on every call, so lines
+    /// share these; full passes rebuild them.
+    private final class Style {
+        let family: String
+        let fontSize: CGFloat
+        let baseAttributes = Theme.baseAttributes
+        let baseFont: NSFont
+        let monoFont: NSFont
+        let concealedFont: NSFont
+        /// Levels 1, 2, 3, and 4–6.
+        let headingFonts: [NSFont]
+        let headingParagraph: NSParagraphStyle
+        let codeParagraph: NSParagraphStyle
+        let bold: (font: NSFont, synthetic: Bool)
+        let italic: (font: NSFont, synthetic: Bool)
+        let boldItalic: (font: NSFont, syntheticBold: Bool, syntheticItalic: Bool)
+        let bulletGlyph: CGGlyph
+        /// Extra width added (via kerning) to the space after a list/quote
+        /// marker so the gap is a consistent half-em. Proportional fonts have
+        /// narrow spaces (~0.25em in Hoefler), which makes the gap after a
+        /// bullet look cramped; monospace fonts need no correction.
+        let markerKern: CGFloat
+        let boldColor = Theme.bold, headingColor = Theme.heading, italicColor = Theme.italic
+        let codeAmber = Theme.codeAmber, listMarker = Theme.listMarker
+        let quote = Theme.quote, link = Theme.link
+        private var hangingIndents: [String: NSParagraphStyle] = [:]
 
-    private func computeMarkerKern() -> CGFloat {
-        let spaceWidth = (" " as NSString).size(withAttributes: [.font: Theme.baseFont]).width
-        return max(0, Theme.fontSize * 0.5 - spaceWidth)
-    }
-
-    /// List/quote lines get a base indent, and their wrapped lines align
-    /// with the text after the marker (a hanging indent, including the
-    /// widened marker gap).
-    private func hangingIndentStyle(prefix: String, spacingBefore: CGFloat = 0) -> NSParagraphStyle {
-        let style = NSMutableParagraphStyle()
-        style.lineHeightMultiple = Theme.lineHeightMultiple
-        style.paragraphSpacingBefore = spacingBefore
-        let baseIndent = Theme.fontSize
-        style.firstLineHeadIndent = baseIndent
-        var displayedPrefix = prefix
-        if let marker = displayedPrefix.firstIndex(where: { !$0.isWhitespace }),
-           "-*+".contains(displayedPrefix[marker]) {
-            displayedPrefix.replaceSubrange(marker...marker, with: "•")
+        init(family: String, fontSize: CGFloat) {
+            self.family = family
+            self.fontSize = fontSize
+            baseFont = Theme.font(size: fontSize)
+            monoFont = Theme.codeFont(size: (fontSize * 0.9).rounded())
+            concealedFont = Theme.font(size: 0.1)
+            headingFonts = [1.5, 1.3, 1.15, 1.0].map { Theme.font(size: (fontSize * $0).rounded()) }
+            headingParagraph = Theme.paragraphStyle(spacingBefore: fontSize * 0.42,
+                                                    spacingAfter: fontSize * 0.20)
+            // Code lines are indented; the layout manager stretches the
+            // block's background band back to the margin, so the indent
+            // reads as the band's interior padding.
+            let code = NSMutableParagraphStyle()
+            code.lineHeightMultiple = Theme.lineHeightMultiple
+            code.firstLineHeadIndent = Theme.codeBlockPadding
+            code.headIndent = Theme.codeBlockPadding
+            codeParagraph = code
+            bold = Theme.boldFont(size: fontSize)
+            italic = Theme.italicFont(size: fontSize)
+            boldItalic = Theme.boldItalicFont(size: fontSize)
+            var character: UniChar = 0x2022
+            var glyph: CGGlyph = 0
+            bulletGlyph = CTFontGetGlyphsForCharacters(baseFont, &character, &glyph, 1) ? glyph : 0
+            let spaceWidth = (" " as NSString).size(withAttributes: [.font: baseFont]).width
+            markerKern = max(0, fontSize * 0.5 - spaceWidth)
         }
-        style.headIndent = baseIndent + markerKern
-            + (displayedPrefix as NSString).size(withAttributes: [.font: Theme.baseFont]).width
-        return style
+
+        /// List/quote lines get a base indent, and their wrapped lines align
+        /// with the text after the marker (a hanging indent, including the
+        /// widened marker gap).
+        func hangingIndent(prefix: String, spacingBefore: CGFloat = 0) -> NSParagraphStyle {
+            let key = "\(spacingBefore)|\(prefix)"
+            if let cached = hangingIndents[key] { return cached }
+            let style = NSMutableParagraphStyle()
+            style.lineHeightMultiple = Theme.lineHeightMultiple
+            style.paragraphSpacingBefore = spacingBefore
+            let baseIndent = fontSize
+            style.firstLineHeadIndent = baseIndent
+            var displayedPrefix = prefix
+            if let marker = displayedPrefix.firstIndex(where: { !$0.isWhitespace }),
+               "-*+".contains(displayedPrefix[marker]) {
+                displayedPrefix.replaceSubrange(marker...marker, with: "•")
+            }
+            style.headIndent = baseIndent + markerKern
+                + (displayedPrefix as NSString).size(withAttributes: [.font: baseFont]).width
+            hangingIndents[key] = style
+            return style
+        }
     }
+
+    private var style: Style?
 
     /// Draws an unordered Markdown marker as a typographic bullet without
     /// changing the backing source character.
-    private func substituteBulletGlyph(_ ts: NSTextStorage, markerRange: NSRange) {
-        var character: UniChar = 0x2022
-        var glyph: CGGlyph = 0
-        let font = Theme.baseFont
-        guard CTFontGetGlyphsForCharacters(font, &character, &glyph, 1), glyph != 0,
-              let info = NSGlyphInfo(cgGlyph: glyph, for: font,
+    private func substituteBulletGlyph(_ ts: NSTextStorage, markerRange: NSRange, style: Style) {
+        guard style.bulletGlyph != 0,
+              let info = NSGlyphInfo(cgGlyph: style.bulletGlyph, for: style.baseFont,
                                      baseString: (ts.string as NSString).substring(with: markerRange)) else { return }
         ts.addAttribute(.glyphInfo, value: info, range: markerRange)
     }
 
     /// Widens the marker's trailing space via kerning.
-    private func widenMarkerGap(_ ts: NSTextStorage, markerRange: NSRange) {
-        guard markerKern > 0.1 else { return }
-        ts.addAttribute(.kern, value: markerKern, range: NSRange(location: NSMaxRange(markerRange) - 1, length: 1))
-    }
-
-    private func headingScale(_ level: Int) -> CGFloat {
-        switch level {
-        case 1: return 1.5
-        case 2: return 1.3
-        case 3: return 1.15
-        default: return 1.0
-        }
+    private func widenMarkerGap(_ ts: NSTextStorage, markerRange: NSRange, style: Style) {
+        guard style.markerKern > 0.1 else { return }
+        ts.addAttribute(.kern, value: style.markerKern, range: NSRange(location: NSMaxRange(markerRange) - 1, length: 1))
     }
 
     /// Restyles the whole document, then conceals every syntax marker by
@@ -355,47 +397,73 @@ final class MarkdownHighlighter {
     /// but is never shown. Attribute-only concealment keeps TextKit layout
     /// fully consistent.
     func highlight(_ textStorage: NSTextStorage) {
+        style = nil
+        restyle(textStorage, from: 0, to: nil)
+    }
+
+    /// Restyles just the lines `edited` (in current coordinates) touches,
+    /// matching a full pass: the lines either side too (list spacing reads
+    /// the previous line), then onward until a line's fenced-code state is
+    /// what it was before the edit.
+    func highlight(_ textStorage: NSTextStorage, edited: NSRange) {
+        let text = textStorage.string as NSString
+        let location = min(edited.location, text.length)
+        // Through the character after the edit: an inserted newline leaves
+        // the rest of its line as a new line.
+        let lines = text.lineRange(for: NSRange(location: location,
+                                                length: min(edited.length + 1, text.length - location)))
+        var start = lines.location, end = NSMaxRange(lines)
+        if start > 0 { start = text.lineRange(for: NSRange(location: start - 1, length: 0)).location }
+        if end < text.length { end = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0))) }
+        restyle(textStorage, from: start, to: end)
+    }
+
+    /// Styles whole lines from `start` (a line start) through `end`, or to
+    /// the end of the document when `end` is nil.
+    private func restyle(_ textStorage: NSTextStorage, from start: Int, to end: Int?) {
         guard !isHighlighting else { return }
         isHighlighting = true
         defer { isHighlighting = false }
 
+        let family = Theme.fontFamily, fontSize = Theme.fontSize
+        if style?.family != family || style?.fontSize != fontSize {
+            style = Style(family: family, fontSize: fontSize)
+        }
+        guard let style else { return }
         let text = textStorage.string as NSString
-        let fullRange = NSRange(location: 0, length: text.length)
-        markerKern = computeMarkerKern()
 
         textStorage.beginEditing()
-        textStorage.setAttributes(Theme.baseAttributes, range: fullRange)
-
-        var inCodeBlock = false
-        var lineStart = 0
+        var inCodeBlock = start > 0
+            && textStorage.attribute(.mdCodeBlock, at: start - 1, effectiveRange: nil) != nil
+        var lineStart = start
         while lineStart < text.length {
             let lineRange = text.lineRange(for: NSRange(location: lineStart, length: 0))
-            highlightLine(textStorage, text: text, lineRange: lineRange, inCodeBlock: &inCodeBlock)
+            let wasInCodeBlock = end != nil
+                && textStorage.attribute(.mdCodeBlock, at: NSMaxRange(lineRange) - 1, effectiveRange: nil) != nil
+            textStorage.setAttributes(style.baseAttributes, range: lineRange)
+            highlightLine(textStorage, text: text, lineRange: lineRange, inCodeBlock: &inCodeBlock, style: style)
+            if inCodeBlock { textStorage.addAttribute(.mdCodeBlock, value: true, range: lineRange) }
             lineStart = NSMaxRange(lineRange)
+            if let end, lineStart >= end, inCodeBlock == wasInCodeBlock { break }
         }
 
-        let tiny = Theme.font(size: 0.1)
-        textStorage.enumerateAttribute(.mdMarker, in: fullRange) { value, range, _ in
+        let styled = NSRange(location: start, length: lineStart - start)
+        textStorage.enumerateAttribute(.mdMarker, in: styled) { value, range, _ in
             guard value != nil else { return }
-            textStorage.addAttribute(.font, value: tiny, range: range)
+            textStorage.addAttribute(.font, value: style.concealedFont, range: range)
         }
         textStorage.endEditing()
     }
 
-    private func highlightLine(_ ts: NSTextStorage, text: NSString, lineRange: NSRange, inCodeBlock: inout Bool) {
+    private func highlightLine(_ ts: NSTextStorage, text: NSString, lineRange: NSRange,
+                               inCodeBlock: inout Bool, style: Style) {
         let line = text.substring(with: lineRange)
         let localRange = NSRange(location: 0, length: (line as NSString).length)
         func global(_ r: NSRange) -> NSRange { NSRange(location: lineRange.location + r.location, length: r.length) }
         func mark(_ r: NSRange) { ts.addAttribute(.mdMarker, value: true, range: r) }
 
-        let monoFont = Theme.codeFont(size: (Theme.fontSize * 0.9).rounded())
-        // Code lines are indented; the layout manager stretches the block's
-        // background band back to the margin, so the indent reads as the
-        // band's interior padding.
-        let codeStyle = NSMutableParagraphStyle()
-        codeStyle.lineHeightMultiple = Theme.lineHeightMultiple
-        codeStyle.firstLineHeadIndent = Theme.codeBlockPadding
-        codeStyle.headIndent = Theme.codeBlockPadding
+        let monoFont = style.monoFont
+        let codeStyle = style.codeParagraph
         if Self.fence.firstMatch(in: line, range: localRange) != nil {
             inCodeBlock.toggle()
             ts.addAttributes([.font: monoFont, .foregroundColor: Theme.dim,
@@ -443,18 +511,15 @@ final class MarkdownHighlighter {
                 || bullet.firstMatch(in: previous, range: range) != nil
                 || ordered.firstMatch(in: previous, range: range) != nil
         }()
-        let listSpacing = previousLineIsList ? Theme.fontSize * 0.18 : 0
+        let listSpacing = previousLineIsList ? style.fontSize * 0.18 : 0
         if let m = heading.firstMatch(in: line, range: localRange) {
             let level = m.range(at: 1).length
-            let size = (Theme.fontSize * headingScale(level)).rounded()
             var attributes: [NSAttributedString.Key: Any] = [
-                .font: Theme.font(size: size),
+                .font: style.headingFonts[min(level, 4) - 1],
                 .strokeWidth: -3.0,
-                .paragraphStyle: Theme.paragraphStyle(
-                    spacingBefore: Theme.fontSize * 0.42,
-                    spacingAfter: Theme.fontSize * 0.20),
+                .paragraphStyle: style.headingParagraph,
             ]
-            if let color = Theme.heading { attributes[.foregroundColor] = color }
+            if let color = style.headingColor { attributes[.foregroundColor] = color }
             ts.addAttributes(attributes, range: lineRange)
             let prefix = NSRange(location: lineRange.location, length: level + 1)
             ts.addAttributes([.foregroundColor: Theme.dim, .strokeWidth: 0.0], range: prefix)
@@ -465,23 +530,23 @@ final class MarkdownHighlighter {
             return
         }
         if let m = quote.firstMatch(in: line, range: localRange) {
-            if let color = Theme.quote { ts.addAttribute(.foregroundColor, value: color, range: lineRange) }
+            if let color = style.quote { ts.addAttribute(.foregroundColor, value: color, range: lineRange) }
             ts.addAttribute(.foregroundColor, value: Theme.dim, range: global(m.range))
-            ts.addAttribute(.paragraphStyle, value: hangingIndentStyle(prefix: (line as NSString).substring(with: m.range)), range: lineRange)
-            widenMarkerGap(ts, markerRange: global(m.range))
+            ts.addAttribute(.paragraphStyle, value: style.hangingIndent(prefix: (line as NSString).substring(with: m.range)), range: lineRange)
+            widenMarkerGap(ts, markerRange: global(m.range), style: style)
         } else if let m = task.firstMatch(in: line, range: localRange) {
-            if let color = Theme.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
-            ts.addAttribute(.paragraphStyle, value: hangingIndentStyle(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
-            widenMarkerGap(ts, markerRange: global(m.range))
+            if let color = style.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
+            ts.addAttribute(.paragraphStyle, value: style.hangingIndent(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
+            widenMarkerGap(ts, markerRange: global(m.range), style: style)
         } else if let m = bullet.firstMatch(in: line, range: localRange) {
-            if let color = Theme.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
-            ts.addAttribute(.paragraphStyle, value: hangingIndentStyle(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
-            substituteBulletGlyph(ts, markerRange: global(m.range(at: 2)))
-            widenMarkerGap(ts, markerRange: global(m.range))
+            if let color = style.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
+            ts.addAttribute(.paragraphStyle, value: style.hangingIndent(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
+            substituteBulletGlyph(ts, markerRange: global(m.range(at: 2)), style: style)
+            widenMarkerGap(ts, markerRange: global(m.range), style: style)
         } else if let m = ordered.firstMatch(in: line, range: localRange) {
-            if let color = Theme.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
-            ts.addAttribute(.paragraphStyle, value: hangingIndentStyle(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
-            widenMarkerGap(ts, markerRange: global(m.range))
+            if let color = style.listMarker { ts.addAttribute(.foregroundColor, value: color, range: global(m.range)) }
+            ts.addAttribute(.paragraphStyle, value: style.hangingIndent(prefix: (line as NSString).substring(with: m.range), spacingBefore: listSpacing), range: lineRange)
+            widenMarkerGap(ts, markerRange: global(m.range), style: style)
         }
 
         // Inline rules.
@@ -489,7 +554,7 @@ final class MarkdownHighlighter {
             guard let m else { return }
             let r = global(m.range)
             ts.addAttributes([.font: monoFont, .backgroundColor: Theme.codeBackground], range: r)
-            if let color = Theme.codeAmber { ts.addAttribute(.foregroundColor, value: color, range: r) }
+            if let color = style.codeAmber { ts.addAttribute(.foregroundColor, value: color, range: r) }
             let open = NSRange(location: r.location, length: 1)
             let close = NSRange(location: NSMaxRange(r) - 1, length: 1)
             for tick in [open, close] {
@@ -504,9 +569,9 @@ final class MarkdownHighlighter {
             guard let m else { return }
             tripleRanges.append(m.range)
             let r = global(m.range)
-            let (biFont, syntheticBold, syntheticItalic) = Theme.boldItalicFont(size: Theme.fontSize)
+            let (biFont, syntheticBold, syntheticItalic) = style.boldItalic
             ts.addAttribute(.font, value: biFont, range: r)
-            if let color = Theme.bold { ts.addAttribute(.foregroundColor, value: color, range: r) }
+            if let color = style.boldColor { ts.addAttribute(.foregroundColor, value: color, range: r) }
             if syntheticBold { ts.addAttribute(.strokeWidth, value: -3.0, range: r) }
             if syntheticItalic { ts.addAttribute(.obliqueness, value: 0.18, range: r) }
             let dLen = m.range(at: 1).length
@@ -526,9 +591,9 @@ final class MarkdownHighlighter {
             let r = global(m.range)
             // White and genuinely bold (synthetic stroke when the family
             // has no bold face, e.g. Classic Console Neue).
-            let (boldFont, synthetic) = Theme.boldFont(size: Theme.fontSize)
+            let (boldFont, synthetic) = style.bold
             ts.addAttribute(.font, value: boldFont, range: r)
-            if let color = Theme.bold { ts.addAttribute(.foregroundColor, value: color, range: r) }
+            if let color = style.boldColor { ts.addAttribute(.foregroundColor, value: color, range: r) }
             if synthetic { ts.addAttribute(.strokeWidth, value: -3.0, range: r) }
             let dLen = m.range(at: 1).length
             let open = NSRange(location: r.location, length: dLen)
@@ -548,8 +613,8 @@ final class MarkdownHighlighter {
             let open = NSRange(location: r.location, length: delimiterLength)
             let close = NSRange(location: NSMaxRange(r) - delimiterLength, length: delimiterLength)
             // Real italic face when the family has one; slant otherwise.
-            if let color = Theme.italic { ts.addAttribute(.foregroundColor, value: color, range: r) }
-            let (italicFont, synthetic) = Theme.italicFont(size: Theme.fontSize)
+            if let color = style.italicColor { ts.addAttribute(.foregroundColor, value: color, range: r) }
+            let (italicFont, synthetic) = style.italic
             if synthetic {
                 ts.addAttribute(.obliqueness, value: 0.18, range: r)
             } else {
@@ -572,7 +637,7 @@ final class MarkdownHighlighter {
             let destination = (line as NSString).substring(with: m.range(at: 2))
             ts.addAttribute(.foregroundColor, value: Theme.dim, range: r)
             ts.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: textRange)
-            if let color = Theme.link { ts.addAttribute(.foregroundColor, value: color, range: textRange) }
+            if let color = style.link { ts.addAttribute(.foregroundColor, value: color, range: textRange) }
             // Every link is clickable; the window decides whether the
             // destination is a file, an in-document anchor, or a URL.
             if !destination.isEmpty, textRange.length > 0 {
@@ -580,15 +645,14 @@ final class MarkdownHighlighter {
             }
             let label = (line as NSString).substring(with: m.range(at: 1))
             if label.hasPrefix("@") {
-                let (font, synthetic) = Theme.boldFont(size: Theme.fontSize)
+                let (font, synthetic) = style.bold
                 ts.addAttributes([
                     .font: font, .foregroundColor: NSColor(hex: 0x4169E1),
                     .underlineStyle: 0,
                 ], range: textRange)
                 if synthetic { ts.addAttribute(.strokeWidth, value: -3.0, range: textRange) }
                 // Markdown escapes in filenames remain in the source only.
-                let escapes = Self.regex(#"\\(?=[\[\]\\])"#)
-                escapes.enumerateMatches(in: label, range: NSRange(location: 0, length: (label as NSString).length)) { match, _, _ in
+                Self.labelEscape.enumerateMatches(in: label, range: NSRange(location: 0, length: (label as NSString).length)) { match, _, _ in
                     if let match { mark(NSRange(location: textRange.location + match.range.location, length: 1)) }
                 }
             }
@@ -609,12 +673,12 @@ final class MarkdownHighlighter {
             let resolved = self.resolveWikiLink.map { $0(target) != nil } ?? true
             ts.addAttribute(.foregroundColor, value: Theme.dim, range: r)
             if resolved {
-                if let color = Theme.link { ts.addAttribute(.foregroundColor, value: color, range: visible) }
+                if let color = style.link { ts.addAttribute(.foregroundColor, value: color, range: visible) }
                 ts.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: visible)
                 ts.addAttribute(.wikiReference, value: target, range: visible)
             } else {
                 ts.addAttributes([
-                    .foregroundColor: (Theme.link ?? Theme.foreground).withAlphaComponent(0.45),
+                    .foregroundColor: (style.link ?? Theme.foreground).withAlphaComponent(0.45),
                     .underlineStyle: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue,
                 ], range: visible)
             }
@@ -630,7 +694,7 @@ final class MarkdownHighlighter {
             guard inner.location != NSNotFound,
                   !linkRanges.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) else { return }
             let r = global(inner)
-            if let color = Theme.link { ts.addAttribute(.foregroundColor, value: color, range: r) }
+            if let color = style.link { ts.addAttribute(.foregroundColor, value: color, range: r) }
             ts.addAttributes([
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
                 .fileReference: (line as NSString).substring(with: inner),
