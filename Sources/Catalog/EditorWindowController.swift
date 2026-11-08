@@ -55,6 +55,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let contentGuide = NSLayoutGuide()
     private var pageActions: PageHostingView<PageActionsView>!
     private var backButton: PageHostingView<WikiBackButton>!
+    /// The article bar's search, mirroring Back at the bar's other end.
+    let wikiSearch = WikiSearch()
+    private var searchHost: PageHostingView<WikiSearchField>!
+    private var searchClickMonitor: Any?
     private var chatHost: PageHostingView<ChatDock>!
     private let dockHint = ChatDockHint()
     private var chatTrailing: NSLayoutConstraint!
@@ -257,6 +261,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         pageActions.sizingOptions = [.intrinsicContentSize]
         backButton = PageHostingView(rootView: WikiBackButton { [chrome] in chrome.page?.goBack() })
         backButton.sizingOptions = [.intrinsicContentSize]
+        searchHost = PageHostingView(rootView: WikiSearchField(search: wikiSearch))
+        searchHost.sizingOptions = []
+        searchHost.hitRegion = { [weak self] view, point in
+            guard let self, !self.browsing else { return false }
+            return self.searchHitRect(in: view).map { self.wikiSearch.expanded ? $0.contains(point) : NSBezierPath(ovalIn: $0).contains(point) } ?? false
+        }
+        configureWikiSearch()
         chatHost = PageHostingView(rootView: ChatDock(chrome: chrome, session: agent, actions: agentActions(docked: false)))
         chatHost.sizingOptions = []
         chatHost.hitRegion = { [weak self] view, point in
@@ -270,7 +281,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         agentHost.sizingOptions = []
         agentContainer.wantsLayer = true
         agentContainer.layer?.masksToBounds = true
-        for view in [pageGlass, pageActions!, backButton!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
+        for view in [pageGlass, pageActions!, backButton!, searchHost!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
         agentContainer.addSubview(agentHost)
@@ -282,7 +293,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         configureAgent()
 
         // Back to front: pages, then the glass and its controls, then the
-        // tab strip over everything, then the assistant beside it all.
+        // tab strip over everything, then the assistant beside it all, and
+        // the article search over the floating assistant, for its suggestions.
         container.addSubview(scrollView)
         container.addSubview(pageGlass)
         container.addSubview(pageActions)
@@ -296,6 +308,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         container.addSubview(agentDivider)
         container.addSubview(dockHint)
         container.addSubview(chatHost)
+        container.addSubview(searchHost)
         agentWidthConstraint = agentContainer.widthAnchor.constraint(equalToConstant: 0)
         chatTrailing = chatHost.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: chatRest.trailing)
         chatBottom = chatHost.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: chatRest.bottom)
@@ -304,8 +317,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let preferredHeight = chatHost.heightAnchor.constraint(equalToConstant: ChatDock.panelSize.height)
         preferredWidth.priority = .defaultHigh
         preferredHeight.priority = .defaultHigh
+        let searchWidth = searchHost.widthAnchor.constraint(equalToConstant: WikiSearchField.width)
+        searchWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            preferredWidth, preferredHeight,
+            preferredWidth, preferredHeight, searchWidth,
             chatHost.widthAnchor.constraint(lessThanOrEqualTo: contentGuide.widthAnchor, constant: -2 * ChatDock.margin),
             chatHost.heightAnchor.constraint(lessThanOrEqualTo: container.heightAnchor, constant: -(PageMetrics.barBottom + 12 - chatRest.bottom)),
             chatHost.widthAnchor.constraint(greaterThanOrEqualToConstant: ChatDock.size),
@@ -339,6 +354,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             pageActions.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor),
             backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            // Search mirrors Back: same top, same inset from the page's
+            // other edge (the docked assistant's, when it's open).
+            searchHost.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -PageMetrics.inset),
+            searchHost.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            searchHost.heightAnchor.constraint(equalToConstant: WikiSearchField.height),
+            searchHost.leadingAnchor.constraint(greaterThanOrEqualTo: backButton.trailingAnchor, constant: 12),
             browser.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             browser.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             browser.topAnchor.constraint(equalTo: container.topAnchor),
@@ -420,6 +441,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func windowWillClose(_ notification: Notification) {
         agent.store.detach(agent)
+        wikiSearch.expanded = false
         outlineTimer?.invalidate()
         documents.forEach(retire)
         preview.suspend()
@@ -528,6 +550,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     func switchTab(to index: Int) {
         guard documents.indices.contains(index) else { return }
         if browsing { setBrowsing(false) }
+        wikiSearch.expanded = false
         textView.dismissReferences()
         commitTitleIfEditing()
         flushAutosave()
@@ -568,6 +591,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             ![sidebarBackdrop, browser, divider, agentContainer, agentDivider, dockHint, chatHost].contains($0)
         }
         if on {
+            wikiSearch.expanded = false
             browser.isHidden = false
             // The browser's own fill and edge stand in for the backdrop's.
             sidebarBackdrop.isHidden = true
@@ -1437,6 +1461,64 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         statusPill.isHidden = !(doc.kind == .markdown || doc.wiki?.article != nil) || viewing
         updateChatDock()
         backButton.isHidden = doc.wiki?.canGoBack != true || viewing
+        // Search shows with Back, on articles: the home page has its own.
+        searchHost.isHidden = !showsWikiSearch
+        if searchHost.isHidden { wikiSearch.expanded = false }
+    }
+
+    /// Whether the bar's search button is on the page: Wikipedia articles,
+    /// not the home page, notes, images, or the image viewer.
+    var showsWikiSearch: Bool {
+        guard let page = currentDocument.wiki else { return false }
+        return page.route != nil && page.viewer == nil
+    }
+
+    private func configureWikiSearch() {
+        wikiSearch.onSubmit = { [weak self] title, target in self?.openArticle(title, target: target) }
+        wikiSearch.onExpandedChange = { [weak self] expanded in self?.wikiSearchExpandedChanged(expanded) }
+    }
+
+    /// The part of the search host that takes clicks: the circle at its
+    /// top-right corner, or the open field and its suggestions.
+    private func searchHitRect(in view: NSView) -> NSRect? {
+        let control = PageMetrics.control
+        let bounds = view.bounds
+        guard wikiSearch.expanded else {
+            return NSRect(x: bounds.maxX - control, y: view.isFlipped ? 0 : bounds.maxY - control, width: control, height: control)
+        }
+        let rows = wikiSearch.suggestions.count
+        let height = rows == 0 ? control : min(bounds.height, control + 1 + CGFloat(rows) * WikiSearchField.rowHeight + 16)
+        return NSRect(x: 0, y: view.isFlipped ? 0 : bounds.maxY - height, width: bounds.width, height: height)
+    }
+
+    /// Opens the bar's search field with the cursor in it.
+    func expandWikiSearch() {
+        guard showsWikiSearch else { return }
+        window?.makeFirstResponder(searchHost)
+        wikiSearch.expand()
+    }
+
+    /// While open, a click anywhere else folds the field back into its
+    /// circle; on folding, the page gets its focus back.
+    private func wikiSearchExpandedChanged(_ expanded: Bool) {
+        if expanded {
+            guard searchClickMonitor == nil else { return }
+            searchClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                guard let self, event.window === self.window else { return event }
+                let point = self.searchHost.convert(event.locationInWindow, from: nil)
+                if self.searchHost.isHidden || !(self.searchHitRect(in: self.searchHost)?.contains(point) ?? false) {
+                    self.wikiSearch.expanded = false
+                }
+                return event
+            }
+        } else {
+            if let searchClickMonitor { NSEvent.removeMonitor(searchClickMonitor) }
+            searchClickMonitor = nil
+            if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: searchHost)
+                || ((responder as? NSTextView)?.delegate as? NSView)?.isDescendant(of: searchHost) == true {
+                focusCurrentPage()
+            }
+        }
     }
 
     /// Contents and Share for the page on screen.
@@ -1589,8 +1671,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if browsing { browser.goBack() } else { currentDocument.wiki?.goBack() }
     }
 
+    /// On an article, opens the bar's search field; on the home page,
+    /// focuses its search; elsewhere, opens a Wikipedia tab.
     @objc func searchWikipedia(_ sender: Any?) {
-        if let page = currentDocument.wiki { page.goHome() } else { newWikiTab(sender) }
+        guard let page = currentDocument.wiki else { return newWikiTab(sender) }
+        guard page.route != nil else { return page.goHome() }
+        if page.viewer != nil { page.viewer = nil }
+        expandWikiSearch()
     }
 
     @objc func randomArticle(_ sender: Any?) {
