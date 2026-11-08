@@ -588,5 +588,58 @@ tv.rehighlight()
 tv.toggleCodeBlockMD(nil)
 check("code block wraps at EOF without newline", tv.string, "```\nonly line\n```")
 
+// Embedded quotes: copied with the note's file and heading, pasted with
+// links relative to the destination note.
+let quoteBoard = NSPasteboard(name: NSPasteboard.Name("catalog-behavior-quotes-\(UUID().uuidString)"))
+let sourceNote = URL(fileURLWithPath: "/tmp/Catalog Fixture/Notes/Field Guide.md")
+tv = makeTV("# Field Guide\n\n## Second Section\n\nSome **bold** text here.\n", caret: 0)
+tv.documentURLProvider = { sourceNote }
+tv.rehighlight()
+let boldStart = (tv.string as NSString).range(of: "bold").location
+tv.setSelectedRange(NSRange(location: boldStart + 2, length: 9)) // "ld** text"
+checkTrue("copy as embedded quote needs a selection", tv.copyEmbeddedQuote(to: quoteBoard))
+let copiedQuote = EmbeddedQuote.read(from: quoteBoard)
+check("a partly selected span is quoted whole", copiedQuote?.body ?? "", "**bold** text")
+check("the quote names its note and heading", copiedQuote?.label ?? "", "Field Guide § Second Section")
+check("plain-text pastes elsewhere get an absolute link", quoteBoard.string(forType: .string) ?? "",
+      "> **bold** text\n> — [Field Guide § Second Section](/tmp/Catalog%20Fixture/Notes/Field%20Guide.md#second-section)")
+tv.setSelectedRange(NSRange(location: 0, length: 0))
+checkTrue("no selection, no quote", !tv.copyEmbeddedQuote(to: quoteBoard))
+tv = makeTV("Untitled text", caret: 0)
+tv.setSelectedRange(NSRange(location: 0, length: 8))
+var saveRequested = false
+tv.onRequestSave = { saveRequested = true }
+checkTrue("an untitled note asks to be saved before quoting", !tv.copyEmbeddedQuote(to: quoteBoard) && saveRequested)
+
+tv = makeTV("Intro\nOutro", caret: 5)
+tv.documentURLProvider = { URL(fileURLWithPath: "/tmp/Catalog Fixture/Boards/Plan.md") }
+EmbeddedQuote.write(copiedQuote!, to: quoteBoard)
+checkTrue("pasting a quote is handled", tv.pasteEmbeddedQuote(from: quoteBoard))
+check("pasted quotes link relative to the destination note and stand apart", tv.string,
+      "Intro\n\n> **bold** text\n> — [Field Guide § Second Section](../Notes/Field%20Guide.md#second-section)\n\nOutro")
+
+// The caret entering a quote reveals its syntax; leaving conceals it again.
+tv = makeTV("Before\n\n> Quoted line.\n> — [Guide](Guide.md)\n\nAfter", caret: 0)
+tv.rehighlight()
+let quotedAt = (tv.string as NSString).range(of: "Quoted").location
+func markerHidden(_ tv: EditorTextView, _ location: Int) -> Bool {
+    tv.textStorage?.attribute(.mdMarker, at: location, effectiveRange: nil) != nil
+}
+checkTrue("quote syntax is concealed away from the caret", markerHidden(tv, quotedAt - 2))
+tv.setSelectedRange(NSRange(location: quotedAt + 3, length: 0))
+checkTrue("quote syntax shows with the caret inside", !markerHidden(tv, quotedAt - 2))
+tv.setSelectedRange(NSRange(location: 0, length: 0))
+checkTrue("quote syntax hides again when the caret leaves", markerHidden(tv, quotedAt - 2))
+tv.setSelectedRange(NSRange(location: quotedAt + 3, length: 0))
+tv.insertText("x", replacementRange: tv.selectedRange())
+check("typing in a revealed quote edits its text", tv.string, "Before\n\n> Quoxted line.\n> — [Guide](Guide.md)\n\nAfter")
+var typedRun = NSRange()
+let typedStorage = tv.textStorage!
+_ = typedStorage.attribute(.mdQuoteCard, at: quotedAt, longestEffectiveRange: &typedRun,
+                           in: NSRange(location: 0, length: typedStorage.length))
+check("the card still spans its block after an edit", (tv.string as NSString).substring(with: typedRun),
+      "> Quoxted line.\n> — [Guide](Guide.md)\n")
+quoteBoard.releaseGlobally()
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

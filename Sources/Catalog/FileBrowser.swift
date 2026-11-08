@@ -68,6 +68,10 @@ final class FileBrowser: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         grid.register(BrowserItem.self, forItemWithIdentifier: BrowserItem.identifier)
         grid.onOpen = { [weak self] path in self?.open(path) }
         grid.onCancel = { [weak self] in self?.onToggle?() }
+        grid.fileAt = { [weak self] path in
+            guard let self, self.entries.indices.contains(path.item) else { return nil }
+            return self.entries[path.item].url
+        }
         grid.onFocus = { [weak self] in self?.refreshEmphasis() }
         scroll.documentView = grid
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
@@ -423,6 +427,18 @@ final class BrowserCollectionView: NSCollectionView {
     var onOpen: ((IndexPath) -> Void)?
     var onCancel: (() -> Void)?
     var onFocus: (() -> Void)?
+    /// The file a tile shows, for its right-click menu.
+    var fileAt: ((IndexPath) -> URL?)?
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let path = indexPathForItem(at: convert(event.locationInWindow, from: nil)),
+              let url = fileAt?(path) else { return super.menu(for: event) }
+        let items = ImageClipboard.menuItems(for: url)
+        guard !items.isEmpty else { return super.menu(for: event) }
+        selectionIndexPaths = [path]
+        let menu = NSMenu()
+        items.forEach(menu.addItem)
+        return menu
+    }
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 36, 76: if let path = selectionIndexPaths.first { onOpen?(path) }

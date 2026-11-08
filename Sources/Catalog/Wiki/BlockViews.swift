@@ -11,8 +11,39 @@ struct BlockView: View {
     let block: Block
     let font: ReaderFont
     var onImage: (ViewerItem) -> Void
+    @Environment(WikiPage.self) private var page: WikiPage?
 
     var body: some View {
+        switch block.kind {
+        case .heading, .paragraph, .list, .quote, .math:
+            content.contextMenu { quoteMenu }
+        default:
+            // Figures and maps have their images' own menus.
+            content
+        }
+    }
+
+    /// Quoting into notes. A right-click on selected text shows the text's
+    /// own menu instead; ⇧⌘C quotes a selection.
+    @ViewBuilder
+    private var quoteMenu: some View {
+        if let page, let article = page.article {
+            switch block.kind {
+            case .heading(_, _, let anchor):
+                Button("Copy Section as Embedded Quote") { page.copyQuote(section: anchor) }
+            case .paragraph, .list, .quote, .math:
+                Button("Copy as Embedded Quote") { page.copyQuote(block: block.id) }
+                Button("Copy Section as Embedded Quote") {
+                    page.copyQuote(section: article.section(containing: block.id)?.anchor)
+                }
+            default:
+                EmptyView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch block.kind {
         case .heading(let level, let text, _):
             Text(text)
@@ -126,13 +157,13 @@ struct FigureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if images.count == 1, let image = images.first {
-                ImageTile(image: image, maxHeight: maxHeight) { onImage(ViewerItem(image: image, caption: caption)) }
+                ImageTile(image: image, maxHeight: maxHeight, caption: caption) { onImage(ViewerItem(image: image, caption: caption)) }
                     .frame(maxWidth: .infinity)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                            ImageTile(image: image, fixedHeight: 190) { onImage(ViewerItem(image: image, caption: caption)) }
+                            ImageTile(image: image, fixedHeight: 190, caption: caption) { onImage(ViewerItem(image: image, caption: caption)) }
                         }
                     }
                 }
@@ -148,6 +179,7 @@ struct FigureView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: images.count == 1 ? .center : .leading)
                     .multilineTextAlignment(images.count == 1 ? .center : .leading)
+                    .textSelection(.enabled)
             }
         }
         .padding(.vertical, 6)
@@ -159,6 +191,8 @@ struct ImageTile: View {
     let image: WikiImage
     var maxHeight: CGFloat = 400
     var fixedHeight: CGFloat?
+    /// The figure's caption, for quoting it.
+    var caption: AttributedString? = nil
     var action: () -> Void
     /// EasyTimeline images come without a size; learn it on load.
     @State private var loadedSize: CGSize?
@@ -191,6 +225,7 @@ struct ImageTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(PressableStyle())
+        .contextMenu { WikiImageMenu(image: image, caption: caption) }
         .accessibilityLabel(image.file ?? "Image")
     }
 }

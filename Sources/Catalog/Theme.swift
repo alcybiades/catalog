@@ -353,6 +353,16 @@ enum Theme {
     static var codeBlockBackground: NSColor { palette.codeBlockBackground }
     static let codeBlockPadding: CGFloat = 12
 
+    /// Embedded quote cards: the code-block wash tinted with the link color,
+    /// so they read as something that leads elsewhere.
+    static var quoteAccent: NSColor { link ?? foreground }
+    static var quoteCardFill: NSColor {
+        (codeBlockBackground.blended(withFraction: 0.08, of: quoteAccent) ?? codeBlockBackground)
+    }
+    static var quoteCardStroke: NSColor { quoteAccent.withAlphaComponent(palette.isDark ? 0.16 : 0.22) }
+    static var quoteCardRule: NSColor { quoteAccent.withAlphaComponent(0.85) }
+    static let quoteCardRadius: CGFloat = 10
+
     static let maxImageWidth: CGFloat = 440
     static let imageCornerRadius: CGFloat = 8
 

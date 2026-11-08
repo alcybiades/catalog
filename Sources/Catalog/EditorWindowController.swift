@@ -248,6 +248,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         textView.onOpenReference = { [weak self] destination in self?.follow(destination) }
         textView.onOpenWikiLink = { [weak self] target in self?.followWikiLink(target) }
+        textView.onOpenQuote = { [weak self] destination, excerpt in self?.followQuote(destination, excerpt: excerpt) }
+        textView.documentURLProvider = { [weak self] in self?.currentDocument.url }
+        textView.onRequestSave = { [weak self] in self?.promptForSaveURL() }
+        textView.onEmbeddedQuoteCopied = { [weak self] in self?.flashStatus("Copied embedded quote") }
         textView.wikiLinkResolver = { [weak self] target in self?.resolveWikiLink(target) }
         pageActions = PageHostingView(rootView: PageActionsView(chrome: chrome))
         pageActions.sizingOptions = [.intrinsicContentSize]
@@ -1021,9 +1025,46 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         case .file(let url, let anchor):
             openLink(url, anchor: anchor)
         case .external(let url):
-            NSWorkspace.shared.open(url)
+            if let article = WikiLink.destination(of: url) {
+                // Catalog's own article links open in a Wikipedia tab.
+                openArticleInNewTab(article.title, fragment: article.fragment, activate: true)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
         case .anchor(let anchor):
             scrollToAnchor(anchor)
+        case .unresolved:
+            NSSound.beep()
+        }
+    }
+
+    /// Opens an embedded quote's source: the article section, the media
+    /// file, or the note, where the quoted passage is found and flashed.
+    private func followQuote(_ destination: String, excerpt: String?) {
+        switch EmbeddedQuote.source(of: destination, from: currentDocument.url) {
+        case .wikipedia(let title, let section):
+            openArticleInNewTab(title, fragment: section, activate: true)
+        case .media(let url):
+            openLink(url, anchor: nil)
+        case .note(let url, let anchor):
+            openLink(url, anchor: anchor)
+            guard currentDocument.kind == .markdown, currentDocument.url?.standardizedFileURL == url.standardizedFileURL,
+                  let excerpt, !excerpt.isEmpty else { return }
+            let text = textView.string as NSString
+            // Prefer the passage under the linked heading, then anywhere.
+            let heading = anchor.flatMap { MarkdownHighlighter.headingRange(forAnchor: $0, in: text) }
+            var found = NSRange(location: NSNotFound, length: 0)
+            if let heading {
+                let after = NSRange(location: heading.location, length: text.length - heading.location)
+                found = text.range(of: excerpt, options: [], range: after)
+            }
+            if found.location == NSNotFound { found = text.range(of: excerpt) }
+            guard found.location != NSNotFound else { return }
+            scrollToLocation(found.location)
+            textView.setSelectedRange(found)
+            textView.showFindIndicator(for: found)
+        case .web(let url):
+            NSWorkspace.shared.open(url)
         case .unresolved:
             NSSound.beep()
         }
@@ -1346,6 +1387,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// Binds a page's callbacks to this window.
     private func configure(_ page: WikiPage) {
         page.onChange = { [weak self] in self?.refreshChrome() }
+        page.onQuoteCopied = { [weak self, weak page] in
+            guard let self, self.currentDocument.wiki === page else { return }
+            self.flashStatus("Copied embedded quote")
+        }
         page.openInNewTab = { [weak self, weak page] title, fragment, activate in
             guard let self, self.currentDocument.wiki === page else { return }
             self.openArticleInNewTab(title, fragment: fragment, activate: activate)
@@ -1511,6 +1556,33 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             updateTabs()
             app?.sessionChanged()
         }
+    }
+
+    // MARK: - Embedded quotes
+
+    /// ⇧⌘C away from a note's text (a note's text view answers it itself):
+    /// a Wikipedia tab quotes the selected text, or else the section being
+    /// read; an image tab quotes the image.
+    @objc func copyAsEmbeddedQuote(_ sender: Any?) {
+        let doc = currentDocument
+        if let page = doc.wiki, page.copyQuote(selection: wikiSelection()) { return }
+        if doc.kind == .image, let url = doc.url {
+            EmbeddedQuote.write(EmbeddedQuote.mediaQuote(file: url), to: .general)
+            return
+        }
+        NSSound.beep()
+    }
+
+    /// Text selected in the Wikipedia reader. SwiftUI's selectable text
+    /// selects through the window's field editor, which holds the whole
+    /// paragraph, so this also says which block the selection is in.
+    private func wikiSelection() -> (text: String, block: String)? {
+        guard let host = currentDocument.wiki?.hostView, let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+              // Not the assistant's message field.
+              ((editor.delegate as? NSView) ?? editor).isDescendant(of: host) else { return nil }
+        let range = editor.selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= (editor.string as NSString).length else { return nil }
+        return ((editor.string as NSString).substring(with: range), editor.string)
     }
 
     @objc func wikiBack(_ sender: Any?) {
@@ -1800,7 +1872,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     private func flashStatus(_ message: String) {
-        guard currentDocument.kind == .markdown else { return }
+        guard currentDocument.kind == .markdown || currentDocument.wiki?.article != nil else { return }
         statusLabel.stringValue = "\(currentDocument.name) · \(message)"
         statusLabel.textColor = Theme.code.withAlphaComponent(0.9)
         savedFlashTimer?.invalidate()
@@ -1850,6 +1922,11 @@ extension EditorWindowController: NSMenuItemValidation {
             return currentDocument.kind == .markdown
         case #selector(moveTabToNewWindow(_:)):
             return documents.count > 1
+        case #selector(copyAsEmbeddedQuote(_:)):
+            // In a Wikipedia tab without a selection, the section is quoted.
+            let wholeSection = currentDocument.wiki != nil && wikiSelection() == nil
+            item.title = wholeSection ? "Copy Section as Embedded Quote" : "Copy as Embedded Quote"
+            return currentDocument.wiki?.article != nil || currentDocument.kind == .image
         default:
             return true
         }

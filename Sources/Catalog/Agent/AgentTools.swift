@@ -104,6 +104,11 @@ struct AgentTools {
              "Fetch the full text of an English Wikipedia article by title (best match if inexact).",
              ["title": ("string", "The article title, e.g. \"Kyoto\".")],
              required: ["title"]),
+        tool("quote_wikipedia_section",
+             "Get a Wikipedia section as a ready-made embedded quote (Markdown) to insert into a note: the section's text in full, attributed with a link back to it.",
+             ["title": ("string", "The article title, e.g. \"Kyoto\"."),
+              "section": ("string", "The section heading, e.g. \"History\". Omit for the introduction.")],
+             required: ["title"]),
     ]
 
     private static func tool(_ name: String, _ description: String,
@@ -135,6 +140,7 @@ struct AgentTools {
         case "move_file": return "Moving \(input["from"] as? String ?? "") → \(input["to"] as? String ?? "")"
         case "open_file": return "Opening \(path)"
         case "read_wikipedia_article": return "Reading “\(input["title"] as? String ?? "")” on Wikipedia"
+        case "quote_wikipedia_section": return "Quoting “\(input["title"] as? String ?? "")” from Wikipedia"
         default: return name
         }
     }
@@ -153,6 +159,7 @@ struct AgentTools {
             case "move_file": return try await move(input)
             case "open_file": return try await open(input)
             case "read_wikipedia_article": return try await wikipedia(input)
+            case "quote_wikipedia_section": return try await quoteWikipedia(input)
             default: return .failure("Unknown tool \(name).", summary: "Unknown tool \(name)")
             }
         } catch let error as ToolError {
@@ -332,6 +339,25 @@ struct AgentTools {
         let article = try await WikipediaClient.article(for: title)
         return .text("<article title=\"\(article.title)\" url=\"\(article.url.absoluteString)\">\n\(article.plainText)\n</article>",
                      summary: "Read “\(article.title)” on Wikipedia")
+    }
+
+    private func quoteWikipedia(_ input: [String: Any]) async throws -> ToolOutcome {
+        let title = try string(input, "title")
+        let article = try await WikipediaClient.article(for: title)
+        let name = (input["section"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+        var section: Article.SectionHeading?
+        if !name.isEmpty {
+            guard let found = article.section(named: name) else {
+                let sections = article.sections.map(\.title).joined(separator: ", ")
+                throw ToolError(message: "“\(article.title)” has no section “\(name)”. Sections: \(sections)")
+            }
+            section = found
+        }
+        guard let quote = article.quote(section: section?.anchor) else {
+            throw ToolError(message: "That section of “\(article.title)” has no text to quote.")
+        }
+        let label = quote.label
+        return .text(EmbeddedQuote.markdown(quote, relativeTo: nil), summary: "Quoted “\(label)” from Wikipedia")
     }
 
     @MainActor private static func willModify(_ url: URL) {

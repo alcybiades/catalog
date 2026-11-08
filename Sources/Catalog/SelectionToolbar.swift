@@ -51,6 +51,10 @@ final class SelectionToolbar {
                                        fallback: "{}", toolTip: "Code Block") { [weak self] in
             self?.textView?.toggleCodeBlockMD(nil)
         })
+        views.append(ToolbarIconButton(symbolName: "quote.opening", fallback: "“",
+                                       toolTip: "Copy as Embedded Quote (⇧⌘C)") { [weak self] in
+            self?.textView?.copyAsEmbeddedQuote(nil)
+        })
 
         let divider = NSView()
         divider.wantsLayer = true

@@ -180,6 +180,7 @@ struct ImageViewer: View {
                 .overlay { RemoteImage(url: image.largeURL, maxPixel: 2800, contentMode: .fit) }
                 .frame(width: frame.width, height: frame.height)
                 .clipShape(RoundedRectangle(cornerRadius: scale > 1.01 ? 0 : 12, style: .continuous))
+                .contextMenu { WikiImageMenu(image: image, caption: caption) }
                 .scaleEffect(scale)
                 .offset(offset)
                 .position(x: frame.midX, y: frame.midY)
@@ -244,7 +245,7 @@ struct ImageViewer: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { captionTextHeight = $0 }
             .frame(height: scrolls ? maxHeight : nil, alignment: .top)
             .overlay {
-                ScrollView { text }
+                ScrollView { text.textSelection(.enabled) }
                     .scrollDisabled(!scrolls)
                     .scrollBounceBehavior(.basedOnSize)
             }

@@ -20,7 +20,8 @@
   `claude-api`, `apple`) picks its model, `--theme dark` (or `plasma`,
   `dark-glass`, `light`, `light-glass`, `paper`) picks the theme, `--browse
   /folder` opens the icon browser there (with a workspace folder also passed,
-  Back leads up to it), `--scroll N` scrolls the note (or to Wikipedia block N),
+  Back leads up to it), `--scroll N` scrolls the note (or to Wikipedia block N), `--caret N`
+  puts the note's caret at character N (an embedded quote there shows its syntax),
   `--view-lead` opens the article's lead image in the image viewer once it loads
   (`--view-caption "Text"` replaces its caption, `--view-zoom N` opens it zoomed
   to N), `--move-tab` moves

@@ -785,6 +785,185 @@ check("recovery index follows a renamed buffer",
 RecoveryStore.remove(draftDoc)
 check("removed recovery draft is not found", RecoveryStore.draft(forPath: draftDoc.url!.path) == nil)
 
+// MARK: - Embedded quotes
+
+let guideNS = try String(contentsOf: guide, encoding: .utf8) as NSString
+let bodyRange = guideNS.range(of: "Body.")
+let noteQuote = EmbeddedQuote.noteQuote(text: guideNS, selection: bodyRange, file: guide)!
+check("note quotes take the nearest heading as label and anchor",
+      noteQuote.label == "Field Guide § Second Section" && noteQuote.anchor == "second-section")
+check("note quote links relative to a sibling note",
+      EmbeddedQuote.markdown(noteQuote, relativeTo: links)
+        == "> Body.\n> — [Field Guide § Second Section](Field%20Guide.md#second-section)")
+let board = root.appendingPathComponent("Media/Board.md")
+check("note quote links relative to a note in another folder",
+      EmbeddedQuote.markdown(noteQuote, relativeTo: board)
+        == "> Body.\n> — [Field Guide § Second Section](../Notes/Field%20Guide.md#second-section)")
+let introQuote = EmbeddedQuote.noteQuote(text: "Before any heading.\n\n# Later\n" as NSString,
+                                         selection: NSRange(location: 0, length: 6), file: guide)!
+check("text above every heading quotes the bare note", introQuote.label == "Field Guide" && introQuote.anchor == nil)
+let multi = EmbeddedQuote.noteQuote(text: "## Part\n\nOne.\n\n### Sub\n\nTwo." as NSString,
+                                    selection: NSRange(location: 9, length: 19), file: guide)!
+check("quoted paragraphs stay apart and headings become bold lines",
+      EmbeddedQuote.markdown(multi, relativeTo: links)
+        == "> One.\n>\n> **Sub**\n>\n> Two.\n> — [Field Guide § Part](Field%20Guide.md#part)")
+
+let plain = EmbeddedQuote.markdown(noteQuote, relativeTo: nil)
+let plainDestination = (plain as NSString).substring(from: (plain as NSString).range(of: "](").upperBound)
+if case .file(let url, let anchor) = FileReference.target(String(plainDestination.dropLast()), from: nil) {
+    check("plain-text quotes carry an absolute path that still resolves", url.path == guide.path && anchor == "second-section")
+} else { check("plain-text quotes carry an absolute path that still resolves", false) }
+
+let quoteBoard = NSPasteboard(name: NSPasteboard.Name("catalog-quote-tests-\(UUID().uuidString)"))
+EmbeddedQuote.write(noteQuote, to: quoteBoard)
+check("the pasteboard carries the quote and its Markdown",
+      EmbeddedQuote.read(from: quoteBoard) == noteQuote && quoteBoard.string(forType: .string) == plain)
+quoteBoard.clearContents()
+quoteBoard.setString("> plain", forType: .string)
+check("ordinary text is not taken for a quote", EmbeddedQuote.read(from: quoteBoard) == nil)
+
+check("Wikipedia destinations escape what would end a Markdown link",
+      EmbeddedQuote.wikiDestination(title: "Mercury (planet)", section: "Early history")
+        == "encyclopedia://wiki/Mercury_%28planet%29#Early_history")
+check("Wikipedia destinations name the article and section",
+      EmbeddedQuote.source(of: "encyclopedia://wiki/Mercury_%28planet%29#Early_history", from: links)
+        == .wikipedia(title: "Mercury (planet)", section: "Early_history"))
+check("Catalog's article links open in the reader",
+      WikiLink.destination(of: URL(string: EmbeddedQuote.wikiDestination(title: "Kyoto", section: "History"))!).map { "\($0.title)#\($0.fragment ?? "")" } == "Kyoto#History")
+
+let mediaQuote = EmbeddedQuote.mediaQuote(file: imageURL)
+check("media quotes show the image captioned by its file name",
+      EmbeddedQuote.markdown(mediaQuote, relativeTo: source)
+        == "> ![Landscape](../Media/Landscape.png)\n> — [Landscape](../Media/Landscape.png)")
+check("media captions read as words", EmbeddedQuote.caption(for: URL(fileURLWithPath: "/a/sunset_over-bay.jpg")) == "sunset over bay")
+check("media attributions resolve to the file", EmbeddedQuote.source(of: "../Media/Landscape.png", from: source) == .media(imageURL))
+check("note attributions resolve to the file and heading",
+      EmbeddedQuote.source(of: "Field%20Guide.md#second-section", from: links) == .note(guide, anchor: "second-section"))
+check("source icons follow the link", EmbeddedQuote.symbolName(for: "encyclopedia://wiki/Kyoto") == "book.closed"
+      && EmbeddedQuote.symbolName(for: "../Media/Landscape.png") == "photo"
+      && EmbeddedQuote.symbolName(for: "clips/Walk.mov") == "film"
+      && EmbeddedQuote.symbolName(for: "Field%20Guide.md#x") == "doc.text")
+
+let quoteDoc = """
+# Notes
+
+> Not an embedded quote.
+
+> First paragraph.
+>
+> Second \\[paragraph\\].
+> — [Kyoto § History](encyclopedia://wiki/Kyoto#History)
+
+> — [Only an attribution](Field%20Guide.md)
+
+> Typed by hand.
+> -- [Field Guide](Field%20Guide.md)
+""" as NSString
+let foundQuotes = EmbeddedQuote.blocks(in: quoteDoc)
+check("only blockquotes ending in an attribution (with a body) are embedded quotes", foundQuotes.count == 2)
+if let first = foundQuotes.first {
+    check("an embedded quote spans its whole block", quoteDoc.substring(with: first.range).hasPrefix("> First")
+          && quoteDoc.substring(with: first.range).hasSuffix("#History)\n"))
+    check("the attribution's label and link are read", first.attribution.label == "Kyoto § History"
+          && first.attribution.destination == "encyclopedia://wiki/Kyoto#History")
+    check("the excerpt is the first quoted line", EmbeddedQuote.excerpt(of: first, in: quoteDoc) == "First paragraph.")
+    check("any line of the block finds it",
+          EmbeddedQuote.block(containing: quoteDoc.range(of: "Second").location, in: quoteDoc) == first)
+}
+check("a double hyphen attribution is accepted", foundQuotes.last?.attribution.label == "Field Guide")
+let escaped = EmbeddedQuote.blocks(in: "> x\n> — [A \\[draft\\]](a.md)" as NSString).first
+check("escaped label brackets are read back", escaped?.attribution.label == "A [draft]")
+check("escaped labels round-trip through the writer",
+      EmbeddedQuote.blocks(in: EmbeddedQuote.markdown(EmbeddedQuote.Quote(kind: .note, body: "x", label: "A [draft]",
+                                                                          target: guide.path, anchor: nil),
+                                                      relativeTo: links) as NSString).first?.attribution.label == "A [draft]")
+check("pasted quotes stand apart from surrounding text",
+      EmbeddedQuote.padded("> q\n> — [a](b)", in: "before\nafter" as NSString, replacing: NSRange(location: 6, length: 0))
+        == "\n\n> q\n> — [a](b)\n")
+
+// The card: one attribute over the block, the label a link, the syntax concealed until the caret is inside.
+let cardStorage = NSTextStorage(string: quoteDoc as String)
+let cardHighlighter = MarkdownHighlighter()
+cardHighlighter.highlight(cardStorage)
+let cardBlock = foundQuotes[0]
+var cardRun = NSRange()
+let card = cardStorage.attribute(.mdQuoteCard, at: cardBlock.range.location, longestEffectiveRange: &cardRun,
+                                 in: NSRange(location: 0, length: cardStorage.length)) as? QuoteCard
+check("an embedded quote draws as one card", card != nil && cardRun == cardBlock.range)
+check("a plain blockquote draws no card",
+      cardStorage.attribute(.mdQuoteCard, at: quoteDoc.range(of: "Not an").location, effectiveRange: nil) == nil)
+check("the card's source label follows its link",
+      cardStorage.attribute(.fileReference, at: cardBlock.attribution.labelRange.location, effectiveRange: nil) as? String
+        == "encyclopedia://wiki/Kyoto#History"
+      && cardStorage.attribute(.mdQuoteSource, at: cardBlock.attribution.labelRange.location, effectiveRange: nil) != nil)
+check("the card carries its excerpt", card?.excerpt == "First paragraph.")
+check("quote markers are concealed in the card",
+      cardStorage.attribute(.mdMarker, at: cardBlock.range.location, effectiveRange: nil) != nil
+      && cardStorage.attribute(.mdMarker, at: cardBlock.attribution.line.location + 2, effectiveRange: nil) != nil)
+cardHighlighter.revealLocation = quoteDoc.range(of: "Second").location
+cardHighlighter.highlight(cardStorage, lines: cardBlock.range)
+check("with the caret inside, the syntax shows",
+      cardStorage.attribute(.mdMarker, at: cardBlock.range.location, effectiveRange: nil) == nil
+      && cardStorage.attribute(.mdMarker, at: cardBlock.attribution.line.location + 2, effectiveRange: nil) == nil)
+cardStorage.attribute(.mdQuoteCard, at: cardBlock.range.location, longestEffectiveRange: &cardRun,
+                      in: NSRange(location: 0, length: cardStorage.length))
+check("a partial restyle keeps the card whole", cardRun == cardBlock.range)
+
+// Wikipedia quotes from an article's blocks.
+var bold = AttributedString("old capital")
+bold.inlinePresentationIntent = .stronglyEmphasized
+var paragraph = AttributedString("Kyoto was the ")
+paragraph.append(bold)
+paragraph.append(AttributedString(" of Japan."))
+let figure = WikiImage(url: URL(string: "https://upload.wikimedia.org/a/Kyoto_(night).jpg")!, width: 300, height: 200)
+let article = Article(
+    title: "Kyoto", summary: nil, url: URL(string: "https://en.wikipedia.org/wiki/Kyoto")!, leadImage: nil, leadCaption: nil,
+    infobox: [],
+    blocks: [
+        Block(id: 0, kind: .paragraph(AttributedString("Kyoto is a city."))),
+        Block(id: 1, kind: .heading(level: 2, text: "History", anchor: "History")),
+        Block(id: 2, kind: .paragraph(paragraph)),
+        Block(id: 3, kind: .heading(level: 3, text: "Early history", anchor: "Early_history")),
+        Block(id: 4, kind: .list([ListItem(id: 0, level: 0, marker: "•", text: AttributedString("Temples"))])),
+        Block(id: 5, kind: .figure([figure], caption: AttributedString("Kyoto at night"))),
+        Block(id: 6, kind: .heading(level: 2, text: "Geography", anchor: "Geography")),
+        Block(id: 7, kind: .paragraph(AttributedString("Hills surround it."))),
+    ],
+    sections: [], plainText: "")
+check("a section is found by title or anchor", article.section(named: "early history")?.anchor == "Early_history"
+      && article.section(named: "Early_history")?.title == "Early history")
+check("a block knows its section", article.section(containing: 4)?.anchor == "Early_history" && article.section(containing: 0) == nil)
+check("a Wikipedia section quotes in full, subsections included",
+      article.quote(section: "History").map { EmbeddedQuote.markdown($0, relativeTo: nil) }
+        == "> Kyoto was the **old capital** of Japan.\n>\n> **Early history**\n>\n> - Temples\n> — [Kyoto § History](encyclopedia://wiki/Kyoto#History)")
+check("the lead quotes without a section",
+      article.quote(section: nil).map { EmbeddedQuote.markdown($0, relativeTo: nil) }
+        == "> Kyoto is a city.\n> — [Kyoto](encyclopedia://wiki/Kyoto)")
+check("a paragraph quotes with its section", article.quote(block: 7)?.label == "Kyoto § Geography")
+check("a selection is placed by the paragraph it was made in",
+      article.quote(selection: "old capital", context: "Kyoto was the old capital of Japan.")?.anchor == "History")
+let figureQuote = article.quote(image: figure, caption: AttributedString("Kyoto at night"), block: nil)
+check("a figure quotes its image, caption, and section",
+      EmbeddedQuote.markdown(figureQuote, relativeTo: links)
+        == "> ![Kyoto at night](https://upload.wikimedia.org/a/Kyoto_%28night%29.jpg)\n> Kyoto at night\n> — [Kyoto § Early history](encyclopedia://wiki/Kyoto#Early_history)")
+check("a figure quote reads back as an embedded quote",
+      EmbeddedQuote.blocks(in: EmbeddedQuote.markdown(figureQuote, relativeTo: links) as NSString).count == 1)
+
+// Copy Image puts the picture itself on the pasteboard.
+let imageBoard = NSPasteboard(name: NSPasteboard.Name("catalog-image-tests-\(UUID().uuidString)"))
+check("Copy Image copies a local file", ImageClipboard.copy(file: imageURL, to: imageBoard))
+let imageTypes = imageBoard.types ?? []
+check("copied images paste as PNG, TIFF, and the file",
+      imageTypes.contains(.png) && imageTypes.contains(.tiff) && imageTypes.contains(.fileURL)
+      && imageBoard.data(forType: .png) == (try? Data(contentsOf: imageURL)))
+check("copied images read back at full size", NSImage(pasteboard: imageBoard).map { $0.representations.first?.pixelsWide } == 640)
+check("non-images are not copied as images", !ImageClipboard.copy(file: unknown, to: imageBoard))
+check("media menus offer copying and quoting",
+      ImageClipboard.menuItems(for: imageURL).map(\.title) == ["Copy Image", "Copy as Embedded Quote", "Reveal in Finder"]
+      && ImageClipboard.menuItems(for: guide).isEmpty)
+imageBoard.releaseGlobally()
+quoteBoard.releaseGlobally()
+
 // The watcher reports new entries, ignores atomic saves, and stops with its workspace.
 let watched = fixture.appendingPathComponent("Watched")
 try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)

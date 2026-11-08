@@ -27,6 +27,17 @@ final class FilePreview: NSView, ThemeRefreshing {
     private var imageFrame: NSRect {
         NSRect(x: 24, y: 24, width: max(0, bounds.width - 48), height: max(0, bounds.height - 48))
     }
+    /// The image is drawn whole rather than selectable, so its actions live
+    /// on a right-click (Copy as Embedded Quote is also ⇧⌘C).
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let url = shownURL, !imageView.isHidden else { return nil }
+        let items = ImageClipboard.menuItems(for: url)
+        guard !items.isEmpty else { return nil }
+        let menu = NSMenu()
+        items.forEach(menu.addItem)
+        return menu
+    }
+
     func suspend() {
         originalRequest?.cancel(); originalRequest = nil
         imageView.image = nil

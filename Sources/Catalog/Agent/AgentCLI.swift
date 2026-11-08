@@ -23,6 +23,7 @@ enum AgentCLIPrompt {
     their tabs. New notes are Markdown (.md) files with short descriptive names. Don't delete files unless asked.
     - Keep chat replies brief, in light Markdown: **bold**, *italics*, `code`, and "- " bullets. No headings or tables.
     - Link Wikipedia articles as [Name](encyclopedia://wiki/Exact_Article_Title) (underscores for spaces) so they open in Catalog.
+    - \(EmbeddedQuote.agentGuide)
     """
 }
 
