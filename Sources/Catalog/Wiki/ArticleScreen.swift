@@ -72,8 +72,10 @@ struct ArticleScreen: View {
     // MARK: Loading
 
     private func load() async {
+        // A background tab's article may have loaded before it was shown.
         if let cached = page.cachedArticle(for: route), attempt == 0 {
             phase = .loaded(cached)
+            await scrollToFragment(in: cached)
             return
         }
         if attempt > 0 { withAnimation { phase = .loading } }
@@ -84,20 +86,23 @@ struct ArticleScreen: View {
             guard !Task.isCancelled else { return }
             withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) { phase = .loaded(article) }
             page.loaded(article, for: route)
-            if let fragment = route.fragment {
-                let wanted = fragment.replacingOccurrences(of: " ", with: "_").lowercased()
-                if let section = article.blocks.lazy.compactMap({ block -> String? in
-                    if case .heading(_, _, let anchor) = block.kind, anchor.lowercased() == wanted { return anchor }
-                    return nil
-                }).first {
-                    try? await Task.sleep(for: .milliseconds(450))
-                    page.scrollTarget = section
-                }
-            }
+            await scrollToFragment(in: article)
         } catch is CancellationError {
         } catch {
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut) { phase = .failed(error) }
+        }
+    }
+
+    private func scrollToFragment(in article: Article) async {
+        guard let fragment = route.fragment else { return }
+        let wanted = fragment.replacingOccurrences(of: " ", with: "_").lowercased()
+        if let section = article.blocks.lazy.compactMap({ block -> String? in
+            if case .heading(_, _, let anchor) = block.kind, anchor.lowercased() == wanted { return anchor }
+            return nil
+        }).first {
+            try? await Task.sleep(for: .milliseconds(450))
+            page.scrollTarget = section
         }
     }
 }

@@ -56,7 +56,7 @@ struct AgentPanel: View {
         }
         .environment(\.openURL, OpenURLAction { url in
             if let destination = WikiLink.destination(of: url) {
-                session.openArticle?(destination.title)
+                session.openArticle?(destination.title, .current)
                 return .handled
             }
             return .systemAction

@@ -18,7 +18,10 @@ right edge to dock it as a sidebar.
 
 Articles render natively, including infoboxes, figures, tables, and math.
 They open as ordinary tabs, and the assistant can work from them and write
-what it finds into your notes.
+what it finds into your notes. Click a link to follow it in the same tab,
+⌘-click to open it in a new tab in the background, or ⌘⇧-click to open it in
+a new tab and switch to it. Article links in the assistant's replies work the
+same way.
 
 ![Wikipedia articles next to a project folder](docs/3.png)
 
@@ -99,6 +102,7 @@ crash or quit. Your windows, tabs, and folders are restored when you relaunch.
 | ⌥⌘O | open folder |
 | ⌘J | show or hide the assistant |
 | ⌘[ ⌘L ⌥⌘R | Wikipedia back / search / random |
+| ⌘-click / ⌘⇧-click link | Wikipedia link in a background / new tab |
 | ⌘= / ⌘− | bigger / smaller text |
 | ⌘F | find |
 

@@ -686,6 +686,35 @@ MainActor.assumeIsolated {
     pages.newWikiTab(nil)
     check("new Wikipedia tab", pages.documents.count == 2 && pages.currentDocument.kind == .wiki && pages.currentDocument.name == "Wikipedia")
     check("Wikipedia tab is not a placeholder", !pages.currentDocument.isPlaceholder)
+
+    // ⌘-clicked article links open tabs beside the current one, like a browser.
+    check("plain link clicks stay in the tab", LinkTarget(modifiers: []) == .currentTab && LinkTarget(modifiers: [.shift, .option]) == .currentTab)
+    check("⌘-click opens a background tab", LinkTarget(modifiers: .command) == .newTab(activate: false))
+    check("⌘⇧-click opens a tab and switches to it", LinkTarget(modifiers: [.command, .shift]) == .newTab(activate: true))
+    let reader = pages.currentDocument
+    _ = reader.wiki?.handle(WikiLink.url(title: "Kyoto", fragment: "History")!, target: .newTab(activate: false))
+    _ = reader.wiki?.handle(WikiLink.url(title: "Osaka")!, target: .newTab(activate: false))
+    let kyoto = pages.documents[2].wiki
+    check("background tabs open after the current tab, in click order",
+          pages.documents.count == 4 && pages.current == 1 && pages.currentDocument === reader
+          && kyoto?.route?.query == "Kyoto" && kyoto?.route?.fragment == "History"
+          && pages.documents[3].wiki?.route?.query == "Osaka")
+    check("background tabs are titled before they load and have no view yet",
+          pages.documents[2].name == "Kyoto" && kyoto?.hostView == nil && kyoto?.openInNewTab != nil)
+    check("the reading tab keeps its history", reader.wiki?.route == nil)
+    _ = reader.wiki?.handle(WikiLink.url(title: "Nara")!, target: .newTab(activate: true))
+    check("a foreground new tab is selected", pages.documents.count == 5 && pages.current == 4 && pages.currentDocument.wiki?.route?.query == "Nara")
+    pages.switchTab(to: 2)
+    check("a background tab's page shows when selected", pages.currentDocument.wiki === kyoto && kyoto?.hostView?.isHidden == false)
+    pages.switchTab(to: 0)
+    pages.openArticle("Kobe", target: .newTab(activate: false))
+    check("assistant links open background tabs from a note", pages.current == 0 && pages.documents[1].wiki?.route?.query == "Kobe")
+    _ = reader.wiki?.handle(WikiLink.url(title: "Uji")!, target: .currentTab)
+    check("a plain click follows the link in place", reader.wiki?.route?.query == "Uji" && pages.documents.count == 6)
+    let countBefore = pages.documents.count
+    _ = reader.wiki?.handle(URL(string: "https://example.com")!, target: .newTab(activate: false))
+    check("⌘-clicked web links open no tab", pages.documents.count == countBefore)
+    while pages.documents.count > 2 { pages.closeTab(at: pages.documents.count - 1) }
     pages.switchTab(to: 0)
 
     let outline = MarkdownHighlighter.outline(of: "# One **bold**\n```\n# not\n```\n### [Three](x.md)\n" as NSString)
