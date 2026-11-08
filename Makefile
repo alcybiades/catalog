@@ -21,6 +21,8 @@ test:
 		Sources/Catalog/MarkdownHighlighter.swift \
 		Sources/Catalog/CodeSyntax.swift \
 		Sources/Catalog/ImageLoader.swift \
+		Sources/Catalog/EmbeddedQuote.swift \
+		Sources/Catalog/ImageClipboard.swift \
 		Sources/Catalog/EditorTextView.swift \
 		Support/BehaviorTests/main.swift
 	@.build/tests/behavior

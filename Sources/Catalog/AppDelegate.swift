@@ -84,6 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let offset = value(after: "--scroll").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.scrollPage(to: CGFloat(offset)) }
         }
+        // `--caret N` puts the note's caret at character N (live preview
+        // reveals the syntax there, e.g. inside an embedded quote).
+        if let caret = value(after: "--caret").flatMap(Int.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
+                guard let textView = keyController?.textView else { return }
+                textView.setSelectedRange(NSRange(location: min(max(0, caret), (textView.string as NSString).length), length: 0))
+            }
+        }
         if let question = value(after: "--ask") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.agent.send(question) }
         }
@@ -129,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme", "--browse"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).

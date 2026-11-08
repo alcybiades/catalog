@@ -85,6 +85,61 @@ Obsidian, and other Markdown tools:
 Click a link to follow it. Option-click a link to put the cursor inside it
 instead.
 
+## Embedded quotes
+
+An embedded quote holds a passage from another note, a Wikipedia section, or
+an image, in full, with a link back to where it came from. It's an ordinary
+blockquote whose last line is the attribution, so it reads the same anywhere:
+
+```markdown
+> Watch the light, not the birds.
+>
+> Patience is most of the method.
+> — [Field Guide § Second Section](Field%20Guide.md#second-section)
+
+> Kyoto served as Japan's capital from 794 until 1868.
+> — [Kyoto § History](encyclopedia://wiki/Kyoto#History)
+
+> ![Coastline at dusk](Media/coastline.png)
+> — [Coastline at dusk](Media/coastline.png)
+```
+
+The last line starts with an em dash (`--` also works) and links to a note
+(a relative path and a heading slug, as above), a Wikipedia article
+(`encyclopedia://wiki/Title#Section_anchor`), or a media file. A Wikipedia
+figure quotes as its image (`![…](https://upload.wikimedia.org/…)`), its
+caption, and the section's link. A blockquote without that last line is just
+a blockquote.
+
+Catalog shows each one as a card with the source beneath it. Click the source
+(or ⌘-click anywhere on the card) to open it: the note at that heading with the
+passage highlighted, the article at that section, or the image or video. With
+the cursor inside, the Markdown shows, dimmed, so you can edit it.
+
+To make one, choose **Copy as Embedded Quote** (⇧⌘C) and paste it into a note:
+
+- **In a note**, select text, then use the selection toolbar's quote button,
+  the context menu, or ⇧⌘C. The quote is attributed to the nearest heading
+  above it. Pasted into another note, its link is rewritten relative to that
+  note; pasted into another app, it carries an absolute path.
+- **In a Wikipedia article**, right-click a paragraph or list to quote it, or a
+  heading to quote its whole section. ⇧⌘C quotes the selected text; with
+  nothing selected it quotes the section you're reading (the menu says
+  **Copy Section as Embedded Quote**). Right-click a figure to quote it.
+- **For images and videos**, right-click an image in a note, an image tab, the
+  file tree, or the icon browser, or press ⇧⌘C in an image tab. The caption
+  starts as the file name; edit the link text to change it.
+
+The assistant knows the format too: ask it to "quote the History section of
+this article into my notes" or "pull the second section of Field Guide into
+this note." With the Claude API it fetches sections with a
+`quote_wikipedia_section` tool.
+
+Images have their own right-click menu everywhere they appear: **Copy Image**
+(the full picture, which pastes into other apps), **Copy as Embedded Quote**,
+and **Reveal in Finder** or, for Wikipedia images, **Copy Image Address** and
+**Open Image in Browser**. Wikipedia captions are selectable.
+
 ## Sessions and recovery
 
 Notes autosave as you type. Unsaved drafts, including untitled ones, are kept
@@ -96,6 +151,7 @@ crash or quit. Your windows, tabs, and folders are restored when you relaunch.
 | Key | Action |
 | --- | --- |
 | ⌘B / ⌘I / ⌘E / ⌘K | bold / italic / code / link |
+| ⇧⌘C | copy as embedded quote |
 | ⌘1–⌘6, ⌘0 | set / clear heading |
 | `/` at line start | slash commands |
 | ⌘N ⌘T ⇧⌘T | new window / note / Wikipedia page |

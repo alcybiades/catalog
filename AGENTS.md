@@ -20,7 +20,8 @@
   `claude-api`, `apple`) picks its model, `--theme dark` (or `plasma`,
   `dark-glass`, `light`, `light-glass`, `paper`) picks the theme, `--browse
   /folder` opens the icon browser there (with a workspace folder also passed,
-  Back leads up to it), `--scroll N` scrolls the note (or to Wikipedia block N), `--move-tab` moves
+  Back leads up to it), `--scroll N` scrolls the note (or to Wikipedia block N), `--caret N`
+  puts the note's caret at character N (an embedded quote there shows its syntax), `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
   composite, glass included.

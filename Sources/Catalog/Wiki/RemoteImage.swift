@@ -139,6 +139,7 @@ struct ImageViewer: View {
                 .aspectRatio(image.aspectRatio, contentMode: .fit)
                 .overlay { RemoteImage(url: image.largeURL, maxPixel: 2800, contentMode: .fit) }
                 .clipShape(RoundedRectangle(cornerRadius: scale > 1.01 ? 0 : 12, style: .continuous))
+                .contextMenu { WikiImageMenu(image: image, caption: caption) }
                 .scaleEffect(scale)
                 .offset(offset)
                 .padding(24)
@@ -171,6 +172,7 @@ struct ImageViewer: View {
                         .tint(WikiTheme.link)
                         .lineSpacing(3)
                         .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
                         .frame(maxWidth: 640)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 12)

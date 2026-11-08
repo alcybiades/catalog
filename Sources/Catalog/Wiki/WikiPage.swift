@@ -97,6 +97,12 @@ final class WikiPage {
     /// The tab's hosting view, created once and kept while the tab lives so
     /// switching tabs preserves scroll position and loaded images.
     @ObservationIgnored var hostView: NSView?
+    /// An embedded quote was copied; the window confirms it.
+    @ObservationIgnored var onQuoteCopied: (() -> Void)?
+    /// Blocks on screen per route, so ⇧⌘C without a selection quotes the
+    /// section being read. Keyed by route: a page being left reports its
+    /// blocks disappearing after the next one appears.
+    @ObservationIgnored var visibleBlocks: [UUID: Set<Int>] = [:]
 
     init(style: Style) {
         self.style = style

@@ -181,6 +181,12 @@ final class FolderSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     private func contextMenu() -> NSMenu {
         let menu = NSMenu()
+        // An image or video: copy it, or quote it into a note.
+        if let node = outline.item(atRow: outline.selectedRow) as? FileNode, !node.isDirectory {
+            let items = ImageClipboard.menuItems(for: node.url)
+            items.forEach(menu.addItem)
+            if !items.isEmpty { menu.addItem(.separator()) }
+        }
         if let directory = creationDirectory {
             for (title, action) in [("New Folder…", #selector(newFolder(_:))), ("New File…", #selector(newFile(_:)))] {
                 let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
