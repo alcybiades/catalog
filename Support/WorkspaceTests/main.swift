@@ -810,5 +810,29 @@ try "d".write(to: watched.appendingPathComponent("After.md"), atomically: true, 
 settleWatcher(1)
 check("watcher reports new files, not saves, and stops with its workspace", quietSave && seen && reported.isEmpty && watchedWorkspace == nil)
 NotificationCenter.default.removeObserver(watchObserver)
+
+// The image viewer fits its image above the caption, never under it.
+let viewerWindow = CGSize(width: 1200, height: 800)
+let captionTop = viewerWindow.height - ImageViewerLayout.inset - 90
+let wideFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 3, captionHeight: 90)
+check("wide viewer image spans the width, centered above the caption",
+      abs(wideFrame.width - (1200 - 2 * ImageViewerLayout.margin)) < 0.5
+      && abs(wideFrame.width / wideFrame.height - 3) < 0.01 && wideFrame.maxY <= captionTop
+      && abs(wideFrame.midX - 600) < 0.5)
+let tallFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 0.6, captionHeight: 90)
+check("tall viewer image fills the height between close button and caption",
+      abs(tallFrame.minY - ImageViewerLayout.topReserve) < 0.5
+      && abs(tallFrame.maxY - (captionTop - ImageViewerLayout.captionGap)) < 0.5
+      && abs(tallFrame.width / tallFrame.height - 0.6) < 0.01)
+let bareFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 0.6, captionHeight: 0)
+check("uncaptioned viewer image uses the full height",
+      bareFrame.height > tallFrame.height && abs(bareFrame.maxY - (800 - ImageViewerLayout.margin)) < 0.5)
+let longCaption = ImageViewerLayout.captionMaxHeight(in: viewerWindow)
+let cappedFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 1, captionHeight: longCaption)
+check("a capped caption leaves the image most of the window", cappedFrame.height > viewerWindow.height / 2)
+let tinyFrame = ImageViewerLayout.imageFrame(in: CGSize(width: 100, height: 100), aspectRatio: .nan, captionHeight: 300)
+check("degenerate viewer sizes stay positive and finite",
+      tinyFrame.width > 0 && tinyFrame.height > 0 && tinyFrame.width.isFinite && tinyFrame.height.isFinite)
+
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
