@@ -54,6 +54,23 @@ struct HomeActions {
     var recentFiles: () -> [URL]
 }
 
+/// Where a followed article link opens, from the modifiers held as it was
+/// clicked: like a browser, ⌘ opens a background tab and ⌘⇧ a tab that
+/// takes over.
+enum LinkTarget: Equatable {
+    case currentTab
+    case newTab(activate: Bool)
+
+    init(modifiers: NSEvent.ModifierFlags) {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        self = flags.contains(.command) ? .newTab(activate: flags.contains(.shift)) : .currentTab
+    }
+
+    /// SwiftUI's link action carries no event, so this reads the keys held
+    /// now, which the click that triggered it still holds.
+    static var current: LinkTarget { LinkTarget(modifiers: NSEvent.modifierFlags) }
+}
+
 /// One Wikipedia tab: its reading history, loaded articles, and scroll
 /// requests. A home tab is the same page with the launcher masthead.
 @MainActor @Observable
@@ -75,6 +92,8 @@ final class WikiPage {
     /// The title scrolled under the glass, or the image viewer opened or
     /// closed; the window updates its glass and bar.
     @ObservationIgnored var onChromeChange: (() -> Void)?
+    /// Opens an article in a new tab beside this one, switching to it or not.
+    @ObservationIgnored var openInNewTab: ((_ title: String, _ fragment: String?, _ activate: Bool) -> Void)?
     /// The tab's hosting view, created once and kept while the tab lives so
     /// switching tabs preserves scroll position and loaded images.
     @ObservationIgnored var hostView: NSView?
@@ -133,13 +152,26 @@ final class WikiPage {
 
     func cachedArticle(for route: ArticleRoute) -> Article? { articles[route.id] }
 
-    /// Routes taps on in-article links; other URLs go to the system.
-    func handle(_ url: URL) -> OpenURLAction.Result {
-        if let destination = WikiLink.destination(of: url) {
-            open(destination.title, fragment: destination.fragment)
-            return .handled
+    /// Loads the current article before the tab is first shown, so a tab
+    /// opened in the background is titled by its article.
+    func prefetch() {
+        guard let route, !route.isRandom, articles[route.id] == nil else { return }
+        Task { [weak self] in
+            guard let article = try? await WikipediaClient.article(for: route.query),
+                  let self, self.path.contains(where: { $0.id == route.id }), self.articles[route.id] == nil else { return }
+            self.loaded(article, for: route)
         }
-        return .systemAction
+    }
+
+    /// Routes taps on in-article links; other URLs go to the system.
+    func handle(_ url: URL, target: LinkTarget = .current) -> OpenURLAction.Result {
+        guard let destination = WikiLink.destination(of: url) else { return .systemAction }
+        if case .newTab(let activate) = target, let openInNewTab {
+            openInNewTab(destination.title, destination.fragment, activate)
+        } else {
+            open(destination.title, fragment: destination.fragment)
+        }
+        return .handled
     }
 
     private func push(_ route: ArticleRoute) {

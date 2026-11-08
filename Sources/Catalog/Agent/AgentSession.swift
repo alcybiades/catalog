@@ -135,7 +135,7 @@ final class AgentSession {
     /// Saves unsaved notes so the assistant reads what the user sees.
     @ObservationIgnored var prepareToSend: (() -> Void)?
     @ObservationIgnored var openFile: ((URL) -> Void)?
-    @ObservationIgnored var openArticle: ((String) -> Void)?
+    @ObservationIgnored var openArticle: ((String, LinkTarget) -> Void)?
 
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first

@@ -1346,6 +1346,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// Binds a page's callbacks to this window.
     private func configure(_ page: WikiPage) {
         page.onChange = { [weak self] in self?.refreshChrome() }
+        page.openInNewTab = { [weak self, weak page] title, fragment, activate in
+            guard let self, self.currentDocument.wiki === page else { return }
+            self.openArticleInNewTab(title, fragment: fragment, activate: activate)
+        }
         page.onChromeChange = { [weak self, weak page] in
             guard let self, self.currentDocument.wiki === page else { return }
             self.updatePageGlass()
@@ -1471,14 +1475,41 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     /// Opens a Wikipedia article: in the current Wikipedia tab, else a new one.
-    func openArticle(_ title: String) {
-        if let page = currentDocument.wiki {
+    /// `.newTab` always adds one, beside the current tab.
+    func openArticle(_ title: String, target: LinkTarget = .currentTab) {
+        if case .newTab(let activate) = target {
+            openArticleInNewTab(title, activate: activate)
+        } else if let page = currentDocument.wiki {
             page.open(title)
         } else {
             let page = WikiPage(style: .wikipedia)
             page.open(title)
             documents.append(Document(wiki: page))
             switchTab(to: documents.count - 1)
+        }
+    }
+
+    /// A ⌘-clicked link: the article opens in a new tab after the current
+    /// one (and after tabs it already opened, keeping them in click order).
+    /// In the background, the current tab keeps focus and the new page
+    /// loads its article so the strip shows its title.
+    func openArticleInNewTab(_ title: String, fragment: String? = nil, activate: Bool) {
+        let page = WikiPage(style: .wikipedia)
+        page.open(title, fragment: fragment)
+        guard page.route != nil else { return }
+        let doc = Document(wiki: page)
+        let opener = currentDocument
+        doc.opener = opener
+        var index = current + 1
+        while index < documents.count, documents[index].opener === opener { index += 1 }
+        documents.insert(doc, at: index)
+        if activate {
+            switchTab(to: index)
+        } else {
+            configure(page)
+            page.prefetch()
+            updateTabs()
+            app?.sessionChanged()
         }
     }
 
@@ -1507,7 +1538,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             guard let self else { return }
             if FileKind.classify(url) == .folder { self.browse(url) } else { self.open(url: url, forceNewTab: true) }
         }
-        agent.openArticle = { [weak self] title in self?.openArticle(title) }
+        agent.openArticle = { [weak self] title, target in self?.openArticle(title, target: target) }
         agent.prepareToSend = { [weak self] in self?.saveNotesForAgent() }
     }
 

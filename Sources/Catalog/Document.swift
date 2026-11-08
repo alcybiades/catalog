@@ -16,6 +16,8 @@ final class Document {
     var customTitle: String?
     /// Names this buffer's crash-recovery draft across launches.
     var recoveryID = UUID()
+    /// The tab a ⌘-clicked link opened this one from.
+    weak var opener: Document?
 
     init(url: URL? = nil, content: String = "") {
         self.url = url
