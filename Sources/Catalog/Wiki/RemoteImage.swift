@@ -113,7 +113,40 @@ struct RemoteImage: View {
     }
 }
 
-/// Full-window image viewer with pinch / scroll zoom.
+/// Where the viewer's image sits at rest: as large as fits between the
+/// close button and the caption, so the caption never covers it.
+enum ImageViewerLayout {
+    static let margin: CGFloat = 24
+    /// The close button's and caption's inset from the window's edges.
+    static let inset: CGFloat = 20
+    /// Room above the image for the close button.
+    static let topReserve: CGFloat = inset + 44 + 8
+    /// Gap between the image and the caption.
+    static let captionGap: CGFloat = 12
+
+    /// The tallest a caption grows before it scrolls, keeping most of the
+    /// window for the image.
+    static func captionMaxHeight(in container: CGSize) -> CGFloat {
+        max(64, (container.height * 0.28).rounded())
+    }
+
+    /// The image's frame in `container`, fitted to `aspectRatio` in the
+    /// space left above a caption `captionHeight` tall (0 for none).
+    static func imageFrame(in container: CGSize, aspectRatio: CGFloat, captionHeight: CGFloat) -> CGRect {
+        let bottom = captionHeight > 0 ? inset + captionHeight + captionGap : margin
+        let available = CGSize(width: max(container.width - 2 * margin, 1),
+                               height: max(container.height - topReserve - bottom, 1))
+        let ratio = aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 4.0 / 3.0
+        var size = CGSize(width: available.width, height: available.width / ratio)
+        if size.height > available.height { size = CGSize(width: available.height * ratio, height: available.height) }
+        return CGRect(x: (container.width - size.width) / 2,
+                      y: topReserve + (available.height - size.height) / 2,
+                      width: size.width, height: size.height)
+    }
+}
+
+/// Full-window image viewer with pinch / scroll zoom. At rest the image
+/// fits above the caption; zoomed, it passes beneath the caption's glass.
 struct ImageViewer: View {
     let image: WikiImage
     let caption: AttributedString?
@@ -124,9 +157,17 @@ struct ImageViewer: View {
     @State private var committedScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var committedOffset: CGSize = .zero
+    @State private var containerSize: CGSize = .zero
+    @State private var captionHeight: CGFloat = 0
+    @State private var captionTextHeight: CGFloat = 0
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
 
+    /// Scripting: `--view-zoom N` opens viewers already zoomed.
+    static var scriptedZoom: CGFloat?
+
     var body: some View {
+        let frame = ImageViewerLayout.imageFrame(in: containerSize, aspectRatio: image.aspectRatio,
+                                                 captionHeight: caption == nil ? 0 : captionHeight)
         ZStack {
             // The same translucent backdrop as the rest of the app: on the
             // Mac the window's own blur and tint show through.
@@ -136,13 +177,16 @@ struct ImageViewer: View {
             Color.clear.contentShape(Rectangle())
             #endif
             Color.clear
-                .aspectRatio(image.aspectRatio, contentMode: .fit)
                 .overlay { RemoteImage(url: image.largeURL, maxPixel: 2800, contentMode: .fit) }
+                .frame(width: frame.width, height: frame.height)
                 .clipShape(RoundedRectangle(cornerRadius: scale > 1.01 ? 0 : 12, style: .continuous))
                 .contextMenu { WikiImageMenu(image: image, caption: caption) }
                 .scaleEffect(scale)
                 .offset(offset)
-                .padding(24)
+                .position(x: frame.midX, y: frame.midY)
+                // Pan and zoom anywhere in the window, except on the
+                // caption and close button floating above.
+                .contentShape(Rectangle())
                 .gesture(magnify.simultaneously(with: drag))
                 .onTapGesture(count: 2) {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
@@ -165,24 +209,47 @@ struct ImageViewer: View {
                     .accessibilityLabel("Close")
                 }
                 Spacer()
-                if let caption, scale <= 1.01 {
-                    Text(WikiTheme.styled(caption))
-                        .font(WikiTheme.body(bodyFamily, size: 15))
-                        .foregroundStyle(WikiTheme.foreground.opacity(0.9))
-                        .tint(WikiTheme.link)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.center)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: 640)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                if let caption {
+                    captionView(caption, maxHeight: ImageViewerLayout.captionMaxHeight(in: containerSize))
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { captionHeight = $0 }
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
-            .padding(20)
+            .padding(ImageViewerLayout.inset)
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
         .preferredColorScheme(WikiTheme.colorScheme)
+        .onAppear {
+            guard let zoom = Self.scriptedZoom else { return }
+            scale = zoom
+            committedScale = zoom
+        }
+    }
+
+    /// The caption on glass; a long one scrolls within `maxHeight`.
+    private func captionView(_ caption: AttributedString, maxHeight: CGFloat) -> some View {
+        let text = Text(WikiTheme.styled(caption))
+            .font(WikiTheme.body(bodyFamily, size: 15))
+            .foregroundStyle(WikiTheme.foreground.opacity(0.9))
+            .tint(WikiTheme.link)
+            .lineSpacing(3)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 640)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        // The hidden copy sizes the glass to the text, up to `maxHeight`.
+        let scrolls = captionTextHeight > maxHeight
+        return text
+            .fixedSize(horizontal: false, vertical: true)
+            .hidden()
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { captionTextHeight = $0 }
+            .frame(height: scrolls ? maxHeight : nil, alignment: .top)
+            .overlay {
+                ScrollView { text.textSelection(.enabled) }
+                    .scrollDisabled(!scrolls)
+                    .scrollBounceBehavior(.basedOnSize)
+            }
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var magnify: some Gesture {
