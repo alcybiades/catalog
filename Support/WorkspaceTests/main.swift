@@ -715,6 +715,54 @@ MainActor.assumeIsolated {
     _ = reader.wiki?.handle(URL(string: "https://example.com")!, target: .newTab(activate: false))
     check("⌘-clicked web links open no tab", pages.documents.count == countBefore)
     while pages.documents.count > 2 { pages.closeTab(at: pages.documents.count - 1) }
+
+    // The article bar's search mirrors Back: on articles only, and ⌘L opens
+    // it there; Return opens in place, ⌘Return and ⌘⇧Return in new tabs.
+    pages.switchTab(to: 0)
+    check("no bar search on a note", !pages.showsWikiSearch)
+    pages.switchTab(to: 1)
+    let reading = pages.currentDocument.wiki!
+    let search = pages.wikiSearch
+    check("bar search shows on an article", reading.route?.query == "Kobe" && pages.showsWikiSearch && !search.expanded)
+    pages.searchWikipedia(nil)
+    check("⌘L on an article opens the bar search in place", search.expanded && reading.route?.query == "Kobe")
+    check("an empty query opens nothing", !search.submit(modifiers: []) && search.expanded && reading.route?.query == "Kobe")
+    search.query = "  Nara  "
+    check("Return opens the title in the current tab",
+          search.submit(modifiers: []) && reading.route?.query == "Nara" && pages.documents.count == 2
+          && !search.expanded && search.query.isEmpty)
+    pages.searchWikipedia(nil)
+    search.query = "Kyoto"
+    search.submit(modifiers: .command)
+    check("⌘Return opens it in a background tab",
+          pages.documents.count == 3 && pages.current == 1 && pages.documents[2].wiki?.route?.query == "Kyoto"
+          && reading.route?.query == "Nara" && !search.expanded)
+    pages.expandWikiSearch()
+    search.query = "Osa"
+    search.suggestions = ["Osaka", "Osaka Castle"]
+    check("↓ highlights a suggestion", search.moveHighlight(1) && search.moveHighlight(1) && search.submission == "Osaka Castle")
+    search.submit(modifiers: [.command, .shift])
+    check("⌘⇧Return opens the highlighted suggestion in a new tab and switches",
+          pages.documents.count == 4 && pages.current == 3 && pages.currentDocument.wiki?.route?.query == "Osaka Castle")
+    pages.switchTab(to: 1)
+    pages.searchWikipedia(nil)
+    search.query = "Uji"
+    pages.switchTab(to: 2)
+    check("switching tabs folds the search away", !search.expanded && search.query.isEmpty)
+    pages.switchTab(to: 1)
+    reading.viewer = ViewerItem(image: WikiImage(url: URL(string: "https://upload.wikimedia.org/a/Nara.jpg")!, width: 300, height: 200), caption: nil)
+    check("no bar search over the image viewer", !pages.showsWikiSearch)
+    pages.searchWikipedia(nil)
+    check("⌘L over the image viewer closes it and opens the bar search", reading.viewer == nil && search.expanded)
+    search.expanded = false
+    reading.goBack()
+    reading.goBack()
+    let focusRequests = reading.searchFocusRequest
+    check("no bar search on the search page", reading.route == nil && !pages.showsWikiSearch)
+    pages.searchWikipedia(nil)
+    check("⌘L on the search page focuses its own field",
+          !search.expanded && reading.searchFocusRequest == focusRequests + 1)
+    while pages.documents.count > 2 { pages.closeTab(at: pages.documents.count - 1) }
     pages.switchTab(to: 0)
 
     let outline = MarkdownHighlighter.outline(of: "# One **bold**\n```\n# not\n```\n### [Three](x.md)\n" as NSString)

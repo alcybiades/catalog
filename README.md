@@ -23,6 +23,11 @@ what it finds into your notes. Click a link to follow it in the same tab,
 a new tab and switch to it. Article links in the assistant's replies work the
 same way.
 
+To jump to another article, click the search button at the upper right of an
+article (or press ⌘L): it opens into a search field, with suggestions as you
+type. Return opens the article in place, ⌘Return in a background tab, and
+⌘⇧Return in a new tab. Escape or a click elsewhere closes it.
+
 ![Wikipedia articles next to a project folder](docs/3.png)
 
 ### Browse folders and images
@@ -158,6 +163,7 @@ crash or quit. Your windows, tabs, and folders are restored when you relaunch.
 | ⌥⌘O | open folder |
 | ⌘J | show or hide the assistant |
 | ⌘[ ⌘L ⌥⌘R | Wikipedia back / search / random |
+| ⌘Return / ⌘⇧Return in article search | open in a background / new tab |
 | ⌘-click / ⌘⇧-click link | Wikipedia link in a background / new tab |
 | ⌘= / ⌘− | bigger / smaller text |
 | ⌘F | find |

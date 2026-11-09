@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // opens viewers zoomed to N.
         if let zoom = value(after: "--view-zoom").flatMap(Double.init) { ImageViewer.scriptedZoom = CGFloat(zoom) }
         if args.contains("--view-lead") { viewLeadImage(caption: value(after: "--view-caption"), attempts: 40) }
+        // `--wiki-search "Query"` opens the article bar's search field with
+        // the query typed (and its suggestions) once the article loads.
+        if let query = value(after: "--wiki-search") { openWikiSearch(query, attempts: 40) }
         // `--browse /folder` opens the icon browser there.
         if let path = value(after: "--browse") { keyController?.browse(URL(fileURLWithPath: path)) }
         // `--move-tab` runs Move Tab to New Window on the current tab.
@@ -142,6 +145,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in viewLeadImage(caption: caption, attempts: attempts - 1) }
     }
 
+    /// Scripting: retries every quarter second until the article has loaded.
+    private func openWikiSearch(_ query: String, attempts: Int) {
+        guard attempts > 0 else { return }
+        if let controller = keyController, controller.currentDocument.wiki?.article != nil {
+            controller.expandWikiSearch()
+            controller.wikiSearch.query = query
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in openWikiSearch(query, attempts: attempts - 1) }
+    }
+
     private typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
 
     static func windowImage(_ window: NSWindow) -> CGImage? {
@@ -154,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).

@@ -24,7 +24,8 @@
   puts the note's caret at character N (an embedded quote there shows its syntax),
   `--view-lead` opens the article's lead image in the image viewer once it loads
   (`--view-caption "Text"` replaces its caption, `--view-zoom N` opens it zoomed
-  to N), `--move-tab` moves
+  to N), `--wiki-search "Query"` opens the article's bar search with the
+  query typed (and its suggestions) once the article loads, `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
   composite, glass included.
