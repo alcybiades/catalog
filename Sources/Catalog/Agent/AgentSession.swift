@@ -135,7 +135,7 @@ final class AgentSession {
     /// Saves unsaved notes so the assistant reads what the user sees.
     @ObservationIgnored var prepareToSend: (() -> Void)?
     @ObservationIgnored var openFile: ((URL) -> Void)?
-    @ObservationIgnored var openArticle: ((String) -> Void)?
+    @ObservationIgnored var openArticle: ((String, LinkTarget) -> Void)?
 
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -410,8 +410,6 @@ final class AgentConversation: Identifiable {
             }
         case .image:
             lines.append("Open tab: the image \(context.fileURL.map(tools.display) ?? context.title) (attached)")
-        case .folder:
-            lines.append("Open tab: the image gallery of \(context.fileURL.map(tools.display) ?? context.title)")
         case .home, .other:
             lines.append("Open tab: \(context.title) (nothing is open)")
         }
@@ -493,6 +491,8 @@ final class AgentConversation: Identifiable {
                 }
                 // The CLI wrote files itself: refresh open notes and the sidebar.
                 if changedFiles { NotificationCenter.default.post(name: .agentDidModifyFiles, object: nil, userInfo: [:]) }
+            case .willModify(let url):
+                NotificationCenter.default.post(name: .agentWillModifyFile, object: nil, userInfo: ["url": url])
             case .failure(let message):
                 failure = message
             }
@@ -525,8 +525,6 @@ final class AgentConversation: Identifiable {
             }
         case .image:
             lines.append("Open tab: the image \(context.fileURL?.path ?? context.title)" + (backend.isCodex ? " (attached)" : " (read it to see it)"))
-        case .folder:
-            lines.append("Open tab: the image gallery of \(context.fileURL?.path ?? context.title)")
         case .home, .other:
             lines.append("Open tab: \(context.title) (nothing is open)")
         }

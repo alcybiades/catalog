@@ -28,17 +28,7 @@ NSGraphicsContext.restoreGraphicsState()
 try bitmap.representation(using: .png, properties: [:])!.write(to: imageURL)
 for n in 1...8 { try FileManager.default.copyItem(at: imageURL, to: root.appendingPathComponent("Media/Study \(n).png")) }
 
-let characters = root.appendingPathComponent("Media/Characters")
-let concepts = root.appendingPathComponent("Media/Characters/Concepts")
-try FileManager.default.createDirectory(at: concepts, withIntermediateDirectories: true)
-try FileManager.default.copyItem(at: imageURL, to: characters.appendingPathComponent("Portrait.png"))
-try FileManager.default.copyItem(at: imageURL, to: concepts.appendingPathComponent("Sketch.png"))
-try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("Media/Loop"), withDestinationURL: root)
-let groups = try MediaGallery.sections(in: root)
-check("parent galleries include descendant images", groups.reduce(0) { $0 + $1.images.count } == 11)
-check("gallery groups are sorted by containing directory", groups.map { FileReference.relativePath(to: $0.directory, from: root) } == ["Media", "Media/Characters", "Media/Characters/Concepts"])
-check("breadcrumb ancestors reach workspace root", MediaGallery.breadcrumbs(to: concepts.appendingPathComponent("Sketch.png"), root: root).map(\.lastPathComponent) == ["Studio", "Media", "Characters", "Concepts", "Sketch.png"])
-check("outside-workspace images use their actual parent", MediaGallery.breadcrumbs(to: source, root: characters).map(\.lastPathComponent) == ["Notes", "Start.md"])
+try "hidden".write(to: root.appendingPathComponent(".hidden"), atomically: true, encoding: .utf8)
 
 let markdown = FileReference.markdown(to: target, from: source)
 check("tag uses portable escaped Markdown", markdown == "[@Design \\[v2\\] #1 (final).md](Nested/Design%20%5Bv2%5D%20%231%20%28final%29.md)")
@@ -192,9 +182,8 @@ check("native titlebar buttons stay hidden", [NSWindow.ButtonType.closeButton, .
 check("open markdown", controller.open(url: source))
 let count = controller.documents.count
 check("open folder", controller.open(url: root))
-check("folder appends tab and keeps existing file", controller.documents.count == count + 1 && controller.documents[0].url == source)
+check("folder keeps its tabs and opens none", controller.documents.count == count && controller.documents[0].url == source)
 check("folder sets root", controller.workspace?.root.path == root.path)
-check("folder tab is gallery", controller.currentDocument.kind == .folder)
 check("open image", controller.open(url: imageURL, forceNewTab: true))
 check("image is read only", !controller.textView.isEditable)
 let bytes = try Data(contentsOf: imageURL)
@@ -206,7 +195,6 @@ controller.saveDocument(nil)
 check("save cannot overwrite binary", try Data(contentsOf: unknown) == Data([0, 255, 20, 19]))
 check("replace root", controller.open(url: root.appendingPathComponent("Media")))
 check("one active workspace replaced", controller.workspace?.root == root.appendingPathComponent("Media"))
-check("old folder tab survives", controller.documents.contains { $0.url?.path == root.path })
 controller.switchTab(to: 0)
 check("markdown editor restored", controller.textView.isEditable && controller.textView.string.contains("# Start"))
 controller.textView.insertText("extra", replacementRange: NSRange(location: controller.textView.string.utf16.count, length: 0))
@@ -219,30 +207,7 @@ func snapshot(_ name: String) {
     view.cacheDisplay(in: view.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/write-\(name).png"))
 }
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-controller.open(url: root.appendingPathComponent("Media"))
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-snapshot("gallery")
-let preview = controller.window!.contentView!.subviews.first { $0 is FilePreview } as! FilePreview
-check("gallery loads multiple collection sections", preview.sections.count == 3)
-let galleryScroll = preview.subviews.first { $0 is NSScrollView } as! NSScrollView
-let groupedCollection = galleryScroll.documentView as! NSCollectionView
-groupedCollection.scrollToItems(at: Set([IndexPath(item: 0, section: 1)]), scrollPosition: .top)
-snapshot("gallery-grouped")
-// Vertical wheel events over a path header must keep scrolling the gallery.
-let headerScroll = galleryDescendants(groupedCollection).compactMap { $0 as? NSScrollView }.first!
-func galleryDescendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + galleryDescendants($0) } }
-galleryScroll.contentView.scroll(to: .zero)
-let headerWheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -80, wheel2: 0, wheel3: 0)!
-headerScroll.scrollWheel(with: NSEvent(cgEvent: headerWheel)!)
-// The gallery scrolls on the legacy (non-responsive) path, where wheel deltas
-// apply via NSScrollingAnimator on a later display-link tick, not synchronously.
-let wheelDeadline = Date().addingTimeInterval(1)
-while galleryScroll.contentView.bounds.minY <= 0, Date() < wheelDeadline {
-    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
-}
-check("wheel over breadcrumbs scrolls parent gallery", galleryScroll.contentView.bounds.minY > 0)
-var galleryPosition = galleryScroll.contentView.bounds.origin
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
 let bar = controller.window!.contentView!.subviews.first { $0 is TabBarView }!
 let strip = bar.subviews.first { $0 is NSScrollView } as! NSScrollView
@@ -254,13 +219,56 @@ func headerButtonReceivesClicks(_ button: NSButton) -> Bool {
     let hit = frameView.hitTest(center)
     return hit === button || hit?.isDescendant(of: button) == true
 }
-for label in ["Collapse sidebar", "Files", "Media"] {
+for label in ["Collapse sidebar", "Show as Icons"] {
     let button = descendants(sidebarPane).compactMap { $0 as? NSButton }.first { $0.toolTip == label }!
     check("\(label) receives window hit tests", headerButtonReceivesClicks(button))
 }
+
+// MARK: - Icon browser
+
+let browser = controller.window!.contentView!.subviews.first { $0 is FileBrowser } as! FileBrowser
+descendants(sidebarPane).compactMap { $0 as? NSButton }.first { $0.toolTip == "Show as Icons" }!.performClick(nil)
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+snapshot("browser")
+check("icon browser covers the editor", controller.browsing && !browser.isHidden && browser.frame.minX == 0
+      && abs(browser.frame.maxX - controller.textView.enclosingScrollView!.frame.maxX) < 0.5)
+let names = browser.entries.map(\.url.lastPathComponent)
+check("browser lists folders first, like the sidebar", Array(names.prefix(2)) == ["Media", "Notes"] && names.contains("archive.bin"))
+check("browser skips hidden files", !names.contains { $0.hasPrefix(".") })
+func browserKey(_ code: UInt16, _ text: String) {
+    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                windowNumber: controller.window!.windowNumber, context: nil,
+                                characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+    browser.grid.keyDown(with: event)
+}
+browser.grid.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+browserKey(36, "\r")
+check("Return opens a folder inside the browser", browser.directory?.lastPathComponent == "Media" && browser.canGoBack)
+controller.wikiBack(nil)
+check("Back returns to the parent, selecting the folder left", browser.directory?.path == root.path
+      && browser.grid.selectionIndexPaths == [IndexPath(item: 0, section: 0)])
+let added = root.appendingPathComponent("Browser added.md")
+try "# Added\n".write(to: added, atomically: true, encoding: .utf8)
+Workspace.Change(root: Workspace.canonicalPath(root), directories: [Workspace.canonicalPath(root)]).post()
+check("browser follows workspace changes in place", browser.entries.contains { $0.url.lastPathComponent == added.lastPathComponent }
+      && browser.grid.numberOfItems(inSection: 0) == browser.entries.count)
+try FileManager.default.removeItem(at: added)
+browserKey(53, "\u{1b}")
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+check("Escape returns the browser to the sidebar", !controller.browsing && browser.isHidden
+      && controller.textView.enclosingScrollView!.alphaValue == 1 && sidebarPane.alphaValue == 1)
+controller.browse(root.appendingPathComponent("Media"))
+check("browsing a subfolder leads Back to the sidebar's folder", browser.directory?.lastPathComponent == "Media" && browser.canGoBack)
+let landscape = browser.entries.firstIndex { $0.url.lastPathComponent == "Landscape.png" }!
+browser.grid.selectionIndexPaths = [IndexPath(item: landscape, section: 0)]
+browserKey(36, "\r")
+check("opening a file collapses the browser into its tab", !controller.browsing && controller.currentDocument.url?.path == imageURL.path)
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
 let tab = descendants(strip).first { String(describing: type(of: $0)) == "TabItemView" }!
 check("sidebar controls align to tab centers", abs(control.convert(control.bounds, to: bar).midY - tab.convert(tab.bounds, to: bar).midY) < 0.5)
 check("tab viewport reaches window edge", abs(strip.frame.maxX - bar.bounds.width) < 0.5)
+// Enough tabs to overflow a narrow window.
+for n in 1...4 { controller.open(url: root.appendingPathComponent("Media/Study \(n).png"), forceNewTab: true) }
 controller.window?.setContentSize(NSSize(width: 640, height: 720))
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 controller.switchTab(to: controller.current)
@@ -306,28 +314,14 @@ snapshot("tabs-overflow")
 controller.window?.setContentSize(NSSize(width: 960, height: 720))
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 
-galleryPosition = galleryScroll.contentView.bounds.origin
 controller.open(url: imageURL, forceNewTab: true)
 snapshot("image")
-let imageCrumbs = preview.subviews.first { $0 is BreadcrumbBar } as! BreadcrumbBar
-check("media images show breadcrumbs", !imageCrumbs.isHidden)
-let mediaCrumb = descendants(imageCrumbs).compactMap { $0 as? NSButton }.first { $0.title == "Media" }!
-let beforeBack = controller.documents.count
-mediaCrumb.performClick(nil)
-check("breadcrumb returns to existing gallery tab", controller.currentDocument.kind == .folder && controller.currentDocument.url?.path == root.appendingPathComponent("Media").path && controller.documents.count == beforeBack)
-check("breadcrumb navigation preserves workspace", controller.workspace?.root.path == root.path)
-RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-check("back to gallery restores scroll position", abs(galleryScroll.contentView.bounds.origin.y - galleryPosition.y) < 1)
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
-controller.open(url: imageURL, forceNewTab: true)
-check("Files image view has no heading or breadcrumb", imageCrumbs.isHidden)
-snapshot("image-files")
 
-controller.restoreWorkspace(root: root, collapsed: true, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: true, width: 220)
 controller.switchTab(to: 0)
 snapshot("collapsed")
 check("collapsed body uses full width", abs(controller.textView.enclosingScrollView!.frame.minX) < 0.5)
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 let sidebarView = controller.window!.contentView!.subviews.first { $0 is FolderSidebar }!
 check("expanded sidebar has saved width", sidebarView.frame.width == 220)
@@ -364,9 +358,10 @@ check("close folder keeps tabs and disables sidebar", controller.workspace == ni
 let restored = EditorWindowController(app: nil)
 restored.restoreTab(url: root)
 restored.restoreTab(url: imageURL)
-restored.restoreWorkspace(root: root.appendingPathComponent("Media"), collapsed: true, width: 270, media: true)
-check("restored folder tabs don't replace root", restored.workspace?.root == root.appendingPathComponent("Media") && restored.documents.count == 2)
-check("sidebar preferences restore", restored.sidebarCollapsed && restored.sidebarWidth == 270 && restored.mediaMode)
+restored.restoreWorkspace(root: root.appendingPathComponent("Media"), collapsed: true, width: 270)
+check("restored sessions skip old folder tabs", restored.workspace?.root == root.appendingPathComponent("Media")
+      && !restored.documents.contains { $0.kind == .folder } && restored.documents.contains { $0.url?.path == imageURL.path })
+check("sidebar preferences restore", restored.sidebarCollapsed && restored.sidebarWidth == 270)
 check("persist preview tabs safely", restored.persistAllDrafts())
 // A large folder should create work for the viewport, not for every image.
 let manyImages = fixture.appendingPathComponent("Many images")
@@ -375,38 +370,34 @@ for index in 0..<500 {
     try FileManager.default.copyItem(at: imageURL, to: manyImages.appendingPathComponent("Image \(index).png"))
 }
 let beforeDecodes = ImageLoader.shared.statistics.thumbnailDecodes
-let beforeGallery = Date()
-controller.open(url: manyImages)
-let galleryDeadline = Date().addingTimeInterval(10)
-while preview.sections.first?.images.count != 500 && Date() < galleryDeadline {
-    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-}
-RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-let visible = groupedCollection.visibleItems()
+controller.browse(manyImages)
+RunLoop.current.run(until: Date().addingTimeInterval(1))
+let visible = browser.grid.visibleItems()
 let newDecodes = ImageLoader.shared.statistics.thumbnailDecodes - beforeDecodes
-let visibleThumbnails = visible.flatMap { galleryDescendants($0.view).compactMap { $0 as? GalleryThumbnailView } }
-check("visible thumbnails have composited pixels", !visibleThumbnails.isEmpty && visibleThumbnails.allSatisfy { $0.image != nil && $0.layer?.contents != nil })
+let visibleThumbnails = visible.flatMap { descendants($0.view).compactMap { $0 as? ThumbnailView } }
+check("browser lists every image", browser.entries.count == 500)
+check("visible thumbnails have composited pixels", !visibleThumbnails.isEmpty && visibleThumbnails.allSatisfy { $0.layer?.contents != nil })
 check("thumbnail presentation preserves aspect ratio", visibleThumbnails.allSatisfy { $0.layer?.contentsGravity == .resizeAspect })
 check("thumbnail filenames remain accessible", visibleThumbnails.allSatisfy { $0.accessibilityLabel()?.hasPrefix("Image ") == true })
-check("large gallery indexes all images", preview.sections.first?.images.count == 500)
-check("large gallery only decodes visible cells", !visible.isEmpty && visible.count < 40 && newDecodes <= visible.count + 4)
-check("large gallery pending work is bounded by viewport", ImageLoader.shared.pendingThumbnailCount <= visible.count)
-print(String(format: "GALLERY: 500 files, %d visible cells, %d thumbnail decodes, %.3fs including 0.3s settle", visible.count, newDecodes, Date().timeIntervalSince(beforeGallery)))
-groupedCollection.scrollToItems(at: Set([IndexPath(item: 499, section: 0)]), scrollPosition: .bottom)
+check("large folders only decode visible cells", !visible.isEmpty && visible.count < 60 && newDecodes <= visible.count + 4)
+check("pending thumbnail work is bounded by the viewport", ImageLoader.shared.pendingThumbnailCount <= visible.count)
+print("BROWSER: 500 images, \(visible.count) visible cells, \(newDecodes) thumbnail decodes")
+browser.grid.scrollToItems(at: [IndexPath(item: 499, section: 0)], scrollPosition: .bottom)
 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-let nowVisible = groupedCollection.visibleItems()
-check("offscreen gallery cells release decoded pixels", visible.filter { old in !nowVisible.contains { $0 === old } }.allSatisfy { old in
-    galleryDescendants(old.view).compactMap { $0 as? GalleryThumbnailView }.allSatisfy { $0.image == nil && $0.layer?.contents == nil }
+let nowVisible = browser.grid.visibleItems()
+check("offscreen cells release decoded pixels", visible.filter { old in !nowVisible.contains { $0 === old } }.allSatisfy { old in
+    descendants(old.view).compactMap { $0 as? ThumbnailView }.allSatisfy { $0.image == nil && $0.layer?.contents == nil }
 })
+controller.setBrowsing(false, animated: false)
+let preview = controller.window!.contentView!.subviews.first { $0 is FilePreview } as! FilePreview
 controller.open(url: imageURL, forceNewTab: true)
 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
 let originalImageView = preview.subviews.first { $0 is NSImageView } as! NSImageView
 check("full viewer loads original separately", originalImageView.image != nil)
 controller.switchTab(to: 0)
-check("leaving viewer releases original pixels", originalImageView.image == nil && preview.sections.isEmpty)
-check("leaving gallery cancels pending thumbnails", ImageLoader.shared.pendingThumbnailCount == 0)
+check("leaving viewer releases original pixels", originalImageView.image == nil)
 // Sidebar clicks navigate in a tab belonging to the displayed workspace.
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 let freshA = root.appendingPathComponent("Notes/FreshA.md")
 let freshB = root.appendingPathComponent("Notes/FreshB.md")
 try "# A\n".write(to: freshA, atomically: true, encoding: .utf8)
@@ -438,7 +429,7 @@ try "Outside note".write(to: outsideURL, atomically: true, encoding: .utf8)
 let outsideDocument = Document(url: outsideURL, content: "Outside note")
 let navigation = EditorWindowController(documents: [outsideDocument,
     Document(url: freshA, content: "# A\n"), Document(url: freshB, content: "# B\n")], app: nil)
-navigation.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+navigation.restoreWorkspace(root: root, collapsed: false, width: 220)
 navigation.switchTab(to: 2)
 navigation.switchTab(to: 1)
 navigation.switchTab(to: 0)
@@ -470,13 +461,7 @@ navigation.openInCurrentTab(imageURL)
 check("blank unrelated tab stays open while associated tab shows an image",
       navigation.documents.count == 3 && navigation.documents[2] === blankDocument
       && navigation.current == 1 && navigation.currentDocument.kind == .image)
-navigation.restoreWorkspace(root: root, collapsed: false, width: 220, media: true)
-navigation.switchTab(to: 0)
-navigation.openInCurrentTab(root)
-check("media folder navigation reuses associated tab and preserves sidebar root",
-      navigation.current == 1 && navigation.currentDocument.url?.path == root.path
-      && navigation.documents[0] === outsideDocument && navigation.workspace?.root.path == root.path)
-navigation.restoreWorkspace(root: outsideRoot, collapsed: false, width: 220, media: false)
+navigation.restoreWorkspace(root: outsideRoot, collapsed: false, width: 220)
 navigation.openInCurrentTab(outsideURL)
 navigation.switchTab(to: 1)
 let anotherOutside = outsideRoot.appendingPathComponent("Another.md")
@@ -484,11 +469,11 @@ try "Another note".write(to: anotherOutside, atomically: true, encoding: .utf8)
 navigation.openInCurrentTab(anotherOutside)
 check("changing sidebar root re-evaluates which tabs belong to it",
       navigation.current == 0 && navigation.currentDocument.url == anotherOutside
-      && navigation.documents[1].url?.path == root.path)
+      && navigation.documents[1].url?.path == imageURL.path)
 navigation.window?.orderOut(nil)
 
 // Creation controls follow the selected directory and survive tree refreshes.
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 controller.window?.contentView?.layoutSubtreeIfNeeded()
 let creationSidebar = sidebarPane as! FolderSidebar
 let tree = descendants(creationSidebar).compactMap { $0 as? NSOutlineView }.first!
@@ -537,9 +522,6 @@ let contextEvent = NSEvent.mouseEvent(with: .rightMouseDown, location: contextPo
 let creationMenu = tree.menu(for: contextEvent)!
 check("right click targets clicked directory", creationSidebar.creationDirectory?.standardizedFileURL.path == notes.standardizedFileURL.path && (creationMenu.items.first?.representedObject as? URL)?.standardizedFileURL.path == notes.standardizedFileURL.path)
 check("Files context menu offers file and folder creation", creationMenu.items.contains { $0.title == "New File…" } && creationMenu.items.contains { $0.title == "New Folder…" })
-creationSidebar.mediaMode = true
-check("Media mode hides creation actions", rootActions().allSatisfy(\.isHidden) && tree.menu(for: contextEvent)?.items.count == 1)
-creationSidebar.mediaMode = false
 tree.collapseItem(tree.item(atRow: 0))
 tree.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 let rootContextPoint = tree.convert(NSPoint(x: 60, y: tree.rect(ofRow: 0).midY), to: nil)
@@ -585,12 +567,8 @@ expandControl.performClick(nil)
 check("expansion places sidebar at its final width immediately", abs(creationSidebar.frame.width - expandedWidth) < 0.5)
 settleSheet()
 check("animated expansion restores sidebar width", !creationSidebar.isHidden && abs(creationSidebar.frame.width - expandedWidth) < 0.5)
-for label in ["Files", "Media"] {
-    let button = descendants(creationSidebar).compactMap { $0 as? NSButton }.first { $0.toolTip == label }!
-    check("\(label) receives clicks after expanding", headerButtonReceivesClicks(button))
-    button.performClick(nil)
-    check("\(label) switches sidebar mode", controller.mediaMode == (label == "Media"))
-}
+let showAsIcons = descendants(creationSidebar).compactMap { $0 as? NSButton }.first { $0.toolTip == "Show as Icons" }!
+check("Show as Icons receives clicks after expanding", headerButtonReceivesClicks(showAsIcons))
 control.performClick(nil)
 expandControl.performClick(nil)
 settleSheet()
@@ -598,7 +576,7 @@ check("rapid sidebar toggles settle expanded", !controller.sidebarCollapsed && !
 
 // MARK: - Following links from the editor
 
-controller.restoreWorkspace(root: root, collapsed: false, width: 220, media: false)
+controller.restoreWorkspace(root: root, collapsed: false, width: 220)
 check("open the link fixture", controller.open(url: links, forceNewTab: true))
 let editor: EditorTextView = controller.textView
 editor.layoutManager?.ensureLayout(for: editor.textContainer!)
@@ -708,6 +686,83 @@ MainActor.assumeIsolated {
     pages.newWikiTab(nil)
     check("new Wikipedia tab", pages.documents.count == 2 && pages.currentDocument.kind == .wiki && pages.currentDocument.name == "Wikipedia")
     check("Wikipedia tab is not a placeholder", !pages.currentDocument.isPlaceholder)
+
+    // ⌘-clicked article links open tabs beside the current one, like a browser.
+    check("plain link clicks stay in the tab", LinkTarget(modifiers: []) == .currentTab && LinkTarget(modifiers: [.shift, .option]) == .currentTab)
+    check("⌘-click opens a background tab", LinkTarget(modifiers: .command) == .newTab(activate: false))
+    check("⌘⇧-click opens a tab and switches to it", LinkTarget(modifiers: [.command, .shift]) == .newTab(activate: true))
+    let reader = pages.currentDocument
+    _ = reader.wiki?.handle(WikiLink.url(title: "Kyoto", fragment: "History")!, target: .newTab(activate: false))
+    _ = reader.wiki?.handle(WikiLink.url(title: "Osaka")!, target: .newTab(activate: false))
+    let kyoto = pages.documents[2].wiki
+    check("background tabs open after the current tab, in click order",
+          pages.documents.count == 4 && pages.current == 1 && pages.currentDocument === reader
+          && kyoto?.route?.query == "Kyoto" && kyoto?.route?.fragment == "History"
+          && pages.documents[3].wiki?.route?.query == "Osaka")
+    check("background tabs are titled before they load and have no view yet",
+          pages.documents[2].name == "Kyoto" && kyoto?.hostView == nil && kyoto?.openInNewTab != nil)
+    check("the reading tab keeps its history", reader.wiki?.route == nil)
+    _ = reader.wiki?.handle(WikiLink.url(title: "Nara")!, target: .newTab(activate: true))
+    check("a foreground new tab is selected", pages.documents.count == 5 && pages.current == 4 && pages.currentDocument.wiki?.route?.query == "Nara")
+    pages.switchTab(to: 2)
+    check("a background tab's page shows when selected", pages.currentDocument.wiki === kyoto && kyoto?.hostView?.isHidden == false)
+    pages.switchTab(to: 0)
+    pages.openArticle("Kobe", target: .newTab(activate: false))
+    check("assistant links open background tabs from a note", pages.current == 0 && pages.documents[1].wiki?.route?.query == "Kobe")
+    _ = reader.wiki?.handle(WikiLink.url(title: "Uji")!, target: .currentTab)
+    check("a plain click follows the link in place", reader.wiki?.route?.query == "Uji" && pages.documents.count == 6)
+    let countBefore = pages.documents.count
+    _ = reader.wiki?.handle(URL(string: "https://example.com")!, target: .newTab(activate: false))
+    check("⌘-clicked web links open no tab", pages.documents.count == countBefore)
+    while pages.documents.count > 2 { pages.closeTab(at: pages.documents.count - 1) }
+
+    // The article bar's search mirrors Back: on articles only, and ⌘L opens
+    // it there; Return opens in place, ⌘Return and ⌘⇧Return in new tabs.
+    pages.switchTab(to: 0)
+    check("no bar search on a note", !pages.showsWikiSearch)
+    pages.switchTab(to: 1)
+    let reading = pages.currentDocument.wiki!
+    let search = pages.wikiSearch
+    check("bar search shows on an article", reading.route?.query == "Kobe" && pages.showsWikiSearch && !search.expanded)
+    pages.searchWikipedia(nil)
+    check("⌘L on an article opens the bar search in place", search.expanded && reading.route?.query == "Kobe")
+    check("an empty query opens nothing", !search.submit(modifiers: []) && search.expanded && reading.route?.query == "Kobe")
+    search.query = "  Nara  "
+    check("Return opens the title in the current tab",
+          search.submit(modifiers: []) && reading.route?.query == "Nara" && pages.documents.count == 2
+          && !search.expanded && search.query.isEmpty)
+    pages.searchWikipedia(nil)
+    search.query = "Kyoto"
+    search.submit(modifiers: .command)
+    check("⌘Return opens it in a background tab",
+          pages.documents.count == 3 && pages.current == 1 && pages.documents[2].wiki?.route?.query == "Kyoto"
+          && reading.route?.query == "Nara" && !search.expanded)
+    pages.expandWikiSearch()
+    search.query = "Osa"
+    search.suggestions = ["Osaka", "Osaka Castle"]
+    check("↓ highlights a suggestion", search.moveHighlight(1) && search.moveHighlight(1) && search.submission == "Osaka Castle")
+    search.submit(modifiers: [.command, .shift])
+    check("⌘⇧Return opens the highlighted suggestion in a new tab and switches",
+          pages.documents.count == 4 && pages.current == 3 && pages.currentDocument.wiki?.route?.query == "Osaka Castle")
+    pages.switchTab(to: 1)
+    pages.searchWikipedia(nil)
+    search.query = "Uji"
+    pages.switchTab(to: 2)
+    check("switching tabs folds the search away", !search.expanded && search.query.isEmpty)
+    pages.switchTab(to: 1)
+    reading.viewer = ViewerItem(image: WikiImage(url: URL(string: "https://upload.wikimedia.org/a/Nara.jpg")!, width: 300, height: 200), caption: nil)
+    check("no bar search over the image viewer", !pages.showsWikiSearch)
+    pages.searchWikipedia(nil)
+    check("⌘L over the image viewer closes it and opens the bar search", reading.viewer == nil && search.expanded)
+    search.expanded = false
+    reading.goBack()
+    reading.goBack()
+    let focusRequests = reading.searchFocusRequest
+    check("no bar search on the search page", reading.route == nil && !pages.showsWikiSearch)
+    pages.searchWikipedia(nil)
+    check("⌘L on the search page focuses its own field",
+          !search.expanded && reading.searchFocusRequest == focusRequests + 1)
+    while pages.documents.count > 2 { pages.closeTab(at: pages.documents.count - 1) }
     pages.switchTab(to: 0)
 
     let outline = MarkdownHighlighter.outline(of: "# One **bold**\n```\n# not\n```\n### [Three](x.md)\n" as NSString)
@@ -726,6 +781,8 @@ MainActor.assumeIsolated {
     let edited = awaitTask { await tools.run("edit_file", input: ["path": "Note.md", "old_text": "alpha", "new_text": "gamma"]) }
     check("agent edit succeeds", !edited.isError)
     check("unsaved edits are saved before the agent edits", (try? String(contentsOf: note, encoding: .utf8))?.hasPrefix("Draft # Title") == true)
+    // The edit plays in live; skip to its end.
+    pages.finishLiveEdit()
     check("open note reloads with the agent's edit", pages.currentDocument.storage.string.contains("gamma beta") && !pages.currentDocument.edited)
     pages.currentDocument.undoManager.undo()
     check("agent edit is undoable in the editor", pages.currentDocument.storage.string.contains("alpha beta"))
@@ -778,6 +835,185 @@ check("recovery index follows a renamed buffer",
 RecoveryStore.remove(draftDoc)
 check("removed recovery draft is not found", RecoveryStore.draft(forPath: draftDoc.url!.path) == nil)
 
+// MARK: - Embedded quotes
+
+let guideNS = try String(contentsOf: guide, encoding: .utf8) as NSString
+let bodyRange = guideNS.range(of: "Body.")
+let noteQuote = EmbeddedQuote.noteQuote(text: guideNS, selection: bodyRange, file: guide)!
+check("note quotes take the nearest heading as label and anchor",
+      noteQuote.label == "Field Guide § Second Section" && noteQuote.anchor == "second-section")
+check("note quote links relative to a sibling note",
+      EmbeddedQuote.markdown(noteQuote, relativeTo: links)
+        == "> Body.\n> — [Field Guide § Second Section](Field%20Guide.md#second-section)")
+let board = root.appendingPathComponent("Media/Board.md")
+check("note quote links relative to a note in another folder",
+      EmbeddedQuote.markdown(noteQuote, relativeTo: board)
+        == "> Body.\n> — [Field Guide § Second Section](../Notes/Field%20Guide.md#second-section)")
+let introQuote = EmbeddedQuote.noteQuote(text: "Before any heading.\n\n# Later\n" as NSString,
+                                         selection: NSRange(location: 0, length: 6), file: guide)!
+check("text above every heading quotes the bare note", introQuote.label == "Field Guide" && introQuote.anchor == nil)
+let multi = EmbeddedQuote.noteQuote(text: "## Part\n\nOne.\n\n### Sub\n\nTwo." as NSString,
+                                    selection: NSRange(location: 9, length: 19), file: guide)!
+check("quoted paragraphs stay apart and headings become bold lines",
+      EmbeddedQuote.markdown(multi, relativeTo: links)
+        == "> One.\n>\n> **Sub**\n>\n> Two.\n> — [Field Guide § Part](Field%20Guide.md#part)")
+
+let plain = EmbeddedQuote.markdown(noteQuote, relativeTo: nil)
+let plainDestination = (plain as NSString).substring(from: (plain as NSString).range(of: "](").upperBound)
+if case .file(let url, let anchor) = FileReference.target(String(plainDestination.dropLast()), from: nil) {
+    check("plain-text quotes carry an absolute path that still resolves", url.path == guide.path && anchor == "second-section")
+} else { check("plain-text quotes carry an absolute path that still resolves", false) }
+
+let quoteBoard = NSPasteboard(name: NSPasteboard.Name("catalog-quote-tests-\(UUID().uuidString)"))
+EmbeddedQuote.write(noteQuote, to: quoteBoard)
+check("the pasteboard carries the quote and its Markdown",
+      EmbeddedQuote.read(from: quoteBoard) == noteQuote && quoteBoard.string(forType: .string) == plain)
+quoteBoard.clearContents()
+quoteBoard.setString("> plain", forType: .string)
+check("ordinary text is not taken for a quote", EmbeddedQuote.read(from: quoteBoard) == nil)
+
+check("Wikipedia destinations escape what would end a Markdown link",
+      EmbeddedQuote.wikiDestination(title: "Mercury (planet)", section: "Early history")
+        == "encyclopedia://wiki/Mercury_%28planet%29#Early_history")
+check("Wikipedia destinations name the article and section",
+      EmbeddedQuote.source(of: "encyclopedia://wiki/Mercury_%28planet%29#Early_history", from: links)
+        == .wikipedia(title: "Mercury (planet)", section: "Early_history"))
+check("Catalog's article links open in the reader",
+      WikiLink.destination(of: URL(string: EmbeddedQuote.wikiDestination(title: "Kyoto", section: "History"))!).map { "\($0.title)#\($0.fragment ?? "")" } == "Kyoto#History")
+
+let mediaQuote = EmbeddedQuote.mediaQuote(file: imageURL)
+check("media quotes show the image captioned by its file name",
+      EmbeddedQuote.markdown(mediaQuote, relativeTo: source)
+        == "> ![Landscape](../Media/Landscape.png)\n> — [Landscape](../Media/Landscape.png)")
+check("media captions read as words", EmbeddedQuote.caption(for: URL(fileURLWithPath: "/a/sunset_over-bay.jpg")) == "sunset over bay")
+check("media attributions resolve to the file", EmbeddedQuote.source(of: "../Media/Landscape.png", from: source) == .media(imageURL))
+check("note attributions resolve to the file and heading",
+      EmbeddedQuote.source(of: "Field%20Guide.md#second-section", from: links) == .note(guide, anchor: "second-section"))
+check("source icons follow the link", EmbeddedQuote.symbolName(for: "encyclopedia://wiki/Kyoto") == "book.closed"
+      && EmbeddedQuote.symbolName(for: "../Media/Landscape.png") == "photo"
+      && EmbeddedQuote.symbolName(for: "clips/Walk.mov") == "film"
+      && EmbeddedQuote.symbolName(for: "Field%20Guide.md#x") == "doc.text")
+
+let quoteDoc = """
+# Notes
+
+> Not an embedded quote.
+
+> First paragraph.
+>
+> Second \\[paragraph\\].
+> — [Kyoto § History](encyclopedia://wiki/Kyoto#History)
+
+> — [Only an attribution](Field%20Guide.md)
+
+> Typed by hand.
+> -- [Field Guide](Field%20Guide.md)
+""" as NSString
+let foundQuotes = EmbeddedQuote.blocks(in: quoteDoc)
+check("only blockquotes ending in an attribution (with a body) are embedded quotes", foundQuotes.count == 2)
+if let first = foundQuotes.first {
+    check("an embedded quote spans its whole block", quoteDoc.substring(with: first.range).hasPrefix("> First")
+          && quoteDoc.substring(with: first.range).hasSuffix("#History)\n"))
+    check("the attribution's label and link are read", first.attribution.label == "Kyoto § History"
+          && first.attribution.destination == "encyclopedia://wiki/Kyoto#History")
+    check("the excerpt is the first quoted line", EmbeddedQuote.excerpt(of: first, in: quoteDoc) == "First paragraph.")
+    check("any line of the block finds it",
+          EmbeddedQuote.block(containing: quoteDoc.range(of: "Second").location, in: quoteDoc) == first)
+}
+check("a double hyphen attribution is accepted", foundQuotes.last?.attribution.label == "Field Guide")
+let escaped = EmbeddedQuote.blocks(in: "> x\n> — [A \\[draft\\]](a.md)" as NSString).first
+check("escaped label brackets are read back", escaped?.attribution.label == "A [draft]")
+check("escaped labels round-trip through the writer",
+      EmbeddedQuote.blocks(in: EmbeddedQuote.markdown(EmbeddedQuote.Quote(kind: .note, body: "x", label: "A [draft]",
+                                                                          target: guide.path, anchor: nil),
+                                                      relativeTo: links) as NSString).first?.attribution.label == "A [draft]")
+check("pasted quotes stand apart from surrounding text",
+      EmbeddedQuote.padded("> q\n> — [a](b)", in: "before\nafter" as NSString, replacing: NSRange(location: 6, length: 0))
+        == "\n\n> q\n> — [a](b)\n")
+
+// The card: one attribute over the block, the label a link, the syntax concealed until the caret is inside.
+let cardStorage = NSTextStorage(string: quoteDoc as String)
+let cardHighlighter = MarkdownHighlighter()
+cardHighlighter.highlight(cardStorage)
+let cardBlock = foundQuotes[0]
+var cardRun = NSRange()
+let card = cardStorage.attribute(.mdQuoteCard, at: cardBlock.range.location, longestEffectiveRange: &cardRun,
+                                 in: NSRange(location: 0, length: cardStorage.length)) as? QuoteCard
+check("an embedded quote draws as one card", card != nil && cardRun == cardBlock.range)
+check("a plain blockquote draws no card",
+      cardStorage.attribute(.mdQuoteCard, at: quoteDoc.range(of: "Not an").location, effectiveRange: nil) == nil)
+check("the card's source label follows its link",
+      cardStorage.attribute(.fileReference, at: cardBlock.attribution.labelRange.location, effectiveRange: nil) as? String
+        == "encyclopedia://wiki/Kyoto#History"
+      && cardStorage.attribute(.mdQuoteSource, at: cardBlock.attribution.labelRange.location, effectiveRange: nil) != nil)
+check("the card carries its excerpt", card?.excerpt == "First paragraph.")
+check("quote markers are concealed in the card",
+      cardStorage.attribute(.mdMarker, at: cardBlock.range.location, effectiveRange: nil) != nil
+      && cardStorage.attribute(.mdMarker, at: cardBlock.attribution.line.location + 2, effectiveRange: nil) != nil)
+cardHighlighter.revealLocation = quoteDoc.range(of: "Second").location
+cardHighlighter.highlight(cardStorage, lines: cardBlock.range)
+check("with the caret inside, the syntax shows",
+      cardStorage.attribute(.mdMarker, at: cardBlock.range.location, effectiveRange: nil) == nil
+      && cardStorage.attribute(.mdMarker, at: cardBlock.attribution.line.location + 2, effectiveRange: nil) == nil)
+cardStorage.attribute(.mdQuoteCard, at: cardBlock.range.location, longestEffectiveRange: &cardRun,
+                      in: NSRange(location: 0, length: cardStorage.length))
+check("a partial restyle keeps the card whole", cardRun == cardBlock.range)
+
+// Wikipedia quotes from an article's blocks.
+var bold = AttributedString("old capital")
+bold.inlinePresentationIntent = .stronglyEmphasized
+var paragraph = AttributedString("Kyoto was the ")
+paragraph.append(bold)
+paragraph.append(AttributedString(" of Japan."))
+let figure = WikiImage(url: URL(string: "https://upload.wikimedia.org/a/Kyoto_(night).jpg")!, width: 300, height: 200)
+let article = Article(
+    title: "Kyoto", summary: nil, url: URL(string: "https://en.wikipedia.org/wiki/Kyoto")!, leadImage: nil, leadCaption: nil,
+    infobox: [],
+    blocks: [
+        Block(id: 0, kind: .paragraph(AttributedString("Kyoto is a city."))),
+        Block(id: 1, kind: .heading(level: 2, text: "History", anchor: "History")),
+        Block(id: 2, kind: .paragraph(paragraph)),
+        Block(id: 3, kind: .heading(level: 3, text: "Early history", anchor: "Early_history")),
+        Block(id: 4, kind: .list([ListItem(id: 0, level: 0, marker: "•", text: AttributedString("Temples"))])),
+        Block(id: 5, kind: .figure([figure], caption: AttributedString("Kyoto at night"))),
+        Block(id: 6, kind: .heading(level: 2, text: "Geography", anchor: "Geography")),
+        Block(id: 7, kind: .paragraph(AttributedString("Hills surround it."))),
+    ],
+    sections: [], plainText: "")
+check("a section is found by title or anchor", article.section(named: "early history")?.anchor == "Early_history"
+      && article.section(named: "Early_history")?.title == "Early history")
+check("a block knows its section", article.section(containing: 4)?.anchor == "Early_history" && article.section(containing: 0) == nil)
+check("a Wikipedia section quotes in full, subsections included",
+      article.quote(section: "History").map { EmbeddedQuote.markdown($0, relativeTo: nil) }
+        == "> Kyoto was the **old capital** of Japan.\n>\n> **Early history**\n>\n> - Temples\n> — [Kyoto § History](encyclopedia://wiki/Kyoto#History)")
+check("the lead quotes without a section",
+      article.quote(section: nil).map { EmbeddedQuote.markdown($0, relativeTo: nil) }
+        == "> Kyoto is a city.\n> — [Kyoto](encyclopedia://wiki/Kyoto)")
+check("a paragraph quotes with its section", article.quote(block: 7)?.label == "Kyoto § Geography")
+check("a selection is placed by the paragraph it was made in",
+      article.quote(selection: "old capital", context: "Kyoto was the old capital of Japan.")?.anchor == "History")
+let figureQuote = article.quote(image: figure, caption: AttributedString("Kyoto at night"), block: nil)
+check("a figure quotes its image, caption, and section",
+      EmbeddedQuote.markdown(figureQuote, relativeTo: links)
+        == "> ![Kyoto at night](https://upload.wikimedia.org/a/Kyoto_%28night%29.jpg)\n> Kyoto at night\n> — [Kyoto § Early history](encyclopedia://wiki/Kyoto#Early_history)")
+check("a figure quote reads back as an embedded quote",
+      EmbeddedQuote.blocks(in: EmbeddedQuote.markdown(figureQuote, relativeTo: links) as NSString).count == 1)
+
+// Copy Image puts the picture itself on the pasteboard.
+let imageBoard = NSPasteboard(name: NSPasteboard.Name("catalog-image-tests-\(UUID().uuidString)"))
+check("Copy Image copies a local file", ImageClipboard.copy(file: imageURL, to: imageBoard))
+let imageTypes = imageBoard.types ?? []
+check("copied images paste as PNG, TIFF, and the file",
+      imageTypes.contains(.png) && imageTypes.contains(.tiff) && imageTypes.contains(.fileURL)
+      && imageBoard.data(forType: .png) == (try? Data(contentsOf: imageURL)))
+check("copied images read back at full size", NSImage(pasteboard: imageBoard).map { $0.representations.first?.pixelsWide } == 640)
+check("non-images are not copied as images", !ImageClipboard.copy(file: unknown, to: imageBoard))
+check("media menus offer copying and quoting",
+      ImageClipboard.menuItems(for: imageURL).map(\.title) == ["Copy Image", "Copy as Embedded Quote", "Reveal in Finder"]
+      && ImageClipboard.menuItems(for: guide).isEmpty)
+imageBoard.releaseGlobally()
+quoteBoard.releaseGlobally()
+
 // The watcher reports new entries, ignores atomic saves, and stops with its workspace.
 let watched = fixture.appendingPathComponent("Watched")
 try FileManager.default.createDirectory(at: watched, withIntermediateDirectories: true)
@@ -803,5 +1039,143 @@ try "d".write(to: watched.appendingPathComponent("After.md"), atomically: true, 
 settleWatcher(1)
 check("watcher reports new files, not saves, and stops with its workspace", quietSave && seen && reported.isEmpty && watchedWorkspace == nil)
 NotificationCenter.default.removeObserver(watchObserver)
+
+// The image viewer fits its image above the caption, never under it.
+let viewerWindow = CGSize(width: 1200, height: 800)
+let captionTop = viewerWindow.height - ImageViewerLayout.inset - 90
+let wideFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 3, captionHeight: 90)
+check("wide viewer image spans the width, centered above the caption",
+      abs(wideFrame.width - (1200 - 2 * ImageViewerLayout.margin)) < 0.5
+      && abs(wideFrame.width / wideFrame.height - 3) < 0.01 && wideFrame.maxY <= captionTop
+      && abs(wideFrame.midX - 600) < 0.5)
+let tallFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 0.6, captionHeight: 90)
+check("tall viewer image fills the height between close button and caption",
+      abs(tallFrame.minY - ImageViewerLayout.topReserve) < 0.5
+      && abs(tallFrame.maxY - (captionTop - ImageViewerLayout.captionGap)) < 0.5
+      && abs(tallFrame.width / tallFrame.height - 0.6) < 0.01)
+let bareFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 0.6, captionHeight: 0)
+check("uncaptioned viewer image uses the full height",
+      bareFrame.height > tallFrame.height && abs(bareFrame.maxY - (800 - ImageViewerLayout.margin)) < 0.5)
+let longCaption = ImageViewerLayout.captionMaxHeight(in: viewerWindow)
+let cappedFrame = ImageViewerLayout.imageFrame(in: viewerWindow, aspectRatio: 1, captionHeight: longCaption)
+check("a capped caption leaves the image most of the window", cappedFrame.height > viewerWindow.height / 2)
+let tinyFrame = ImageViewerLayout.imageFrame(in: CGSize(width: 100, height: 100), aspectRatio: .nan, captionHeight: 300)
+check("degenerate viewer sizes stay positive and finite",
+      tinyFrame.width > 0 && tinyFrame.height > 0 && tinyFrame.width.isFinite && tinyFrame.height.isFinite)
+
+
+// MARK: - Live agent edits: open notes follow their files
+
+let liveFolder = fixture.appendingPathComponent("Live")
+try FileManager.default.createDirectory(at: liveFolder, withIntermediateDirectories: true)
+let liveNote = liveFolder.appendingPathComponent("Live.md")
+let liveOther = liveFolder.appendingPathComponent("Other.md")
+let liveOriginal = "# Field Notes\n\nThe heron waits at the edge of the reeds, perfectly still.\n\n- Morning light\n- Two herons\n\nPatience is most of the method.\n"
+let liveRewrite = "# Field Notes\n\nThe grey heron waits at the edge of the reeds, still as a post.\n\n- Morning light on the water\n- Two herons\n- A kingfisher, briefly\n\nPatience is most of the method.\n"
+try liveOriginal.write(to: liveNote, atomically: true, encoding: .utf8)
+try "Other note.\n".write(to: liveOther, atomically: true, encoding: .utf8)
+let live = EditorWindowController(app: nil)
+live.window?.setFrame(NSRect(x: 0, y: 0, width: 700, height: 600), display: false)
+check("live: open note", live.open(url: liveNote))
+let liveDoc = live.currentDocument
+func disk(_ url: URL) -> String { (try? String(contentsOf: url, encoding: .utf8)) ?? "<unreadable>" }
+/// Runs the loop until `done`, noting whether the text was ever in between.
+@discardableResult
+func spin(until done: () -> Bool, timeout: TimeInterval = 5, sawBetween: ((String) -> Void)? = nil) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !done() && Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        sawBetween?(live.textView.string)
+    }
+    return done()
+}
+
+// An outside write (as Claude Code or Codex make) reaches the open note on its own, animated.
+var intermediate = false
+try liveRewrite.write(to: liveNote, atomically: false, encoding: .utf8)
+check("live: the file watcher picks up an outside write",
+      spin(until: { live.textView.string == liveRewrite && !liveDoc.edited }, sawBetween: { text in
+          if text != liveOriginal && text != liveRewrite { intermediate = true }
+      }))
+check("live: the edit plays in through intermediate states", intermediate)
+check("live: the note ends exactly on the file", live.textView.string == disk(liveNote))
+check("live: the note isn't marked edited", !liveDoc.edited && live.window?.isDocumentEdited == false)
+check("live: styling covers the new text", live.textView.textStorage?.attribute(.font, at: (liveRewrite as NSString).length - 3, effectiveRange: nil) != nil)
+check("live: the edit is undoable", liveDoc.undoManager.canUndo && liveDoc.undoManager.undoActionName == "Assistant Edit")
+liveDoc.undoManager.undo()
+check("live: one undo restores the note as it was", live.textView.string == liveOriginal)
+check("live: undoing counts as the user's edit", liveDoc.edited)
+liveDoc.undoManager.redo()
+check("live: redo brings the edit back", live.textView.string == liveRewrite)
+spin(until: { !liveDoc.edited && disk(liveNote) == liveRewrite }, timeout: 3)
+check("live: undo and redo save like typing", disk(liveNote) == liveRewrite && !liveDoc.edited)
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// A newer version arriving mid-animation: the editor lands on the latest.
+let liveV2 = liveRewrite.replacingOccurrences(of: "Patience is most of the method.", with: "Patience, mostly. " + String(repeating: "Watch the light, not the birds. ", count: 12))
+let liveV3 = liveV2.replacingOccurrences(of: "# Field Notes", with: "# Field Notes, Revised")
+try liveV2.write(to: liveNote, atomically: true, encoding: .utf8)
+spin(until: { live.textView.string != liveRewrite }, timeout: 3)
+check("live: a long edit is still underway", live.textView.string != liveV2)
+try liveV3.write(to: liveNote, atomically: true, encoding: .utf8)
+check("live: a change mid-animation jumps to the latest", spin(until: { live.textView.string == liveV3 && !liveDoc.edited }))
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Typing skips straight to the end.
+try liveRewrite.write(to: liveNote, atomically: true, encoding: .utf8)
+spin(until: { live.textView.string != liveV3 }, timeout: 3)
+live.finishLiveEdit()
+check("live: skipping finishes the edit at once", live.textView.string == liveRewrite && !liveDoc.edited)
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Unsaved edits elsewhere in the note survive the assistant's change.
+let noteEnd = (live.textView.string as NSString).length
+live.textView.setSelectedRange(NSRange(location: noteEnd, length: 0))
+live.textView.insertText("My own line.\n", replacementRange: NSRange(location: noteEnd, length: 0))
+check("live: typing marks the note edited", liveDoc.edited)
+let liveAgent = liveRewrite.replacingOccurrences(of: "# Field Notes", with: "# Heron Notes")
+try liveAgent.write(to: liveNote, atomically: true, encoding: .utf8)
+live.syncFromDisk(liveDoc, animated: false)
+check("live: separate unsaved edits are merged with the assistant's",
+      live.textView.string == liveAgent + "My own line.\n" && liveDoc.edited)
+spin(until: { !liveDoc.edited }, timeout: 3)
+check("live: the merged note then saves", disk(liveNote) == liveAgent + "My own line.\n")
+
+// An autosave never overwrites a change it hasn't seen yet.
+let merged = live.textView.string
+live.textView.insertText("More.\n", replacementRange: NSRange(location: (merged as NSString).length, length: 0))
+let agentAgain = (merged as NSString).replacingOccurrences(of: "still as a post", with: "still as stone")
+try agentAgain.write(to: liveNote, atomically: true, encoding: .utf8)
+live.saveDocument(nil)
+check("live: saving folds in the outside change first", disk(liveNote) == agentAgain + "More.\n")
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Overlapping unsaved edits: the assistant's version wins, and Undo restores the user's.
+let beforeConflict = live.textView.string
+let heron = (beforeConflict as NSString).range(of: "Heron Notes")
+live.textView.setSelectedRange(heron)
+live.textView.insertText("Egret Notes", replacementRange: heron)
+let mine = live.textView.string
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+try beforeConflict.replacingOccurrences(of: "Heron Notes", with: "Bittern Notes").write(to: liveNote, atomically: true, encoding: .utf8)
+live.syncFromDisk(liveDoc, animated: false)
+check("live: a conflicting change takes the file's version", live.textView.string == disk(liveNote) && !liveDoc.edited)
+liveDoc.undoManager.undo()
+check("live: undo restores the unsaved edits it replaced", live.textView.string == mine)
+live.saveDocument(nil)
+
+// A background tab updates at once and highlights the change when shown.
+check("live: open a second note", live.open(url: liveOther, forceNewTab: true))
+let otherDoc = live.currentDocument
+live.switchTab(to: live.documents.firstIndex { $0 === liveDoc }!)
+try "Other note, changed.\n".write(to: liveOther, atomically: false, encoding: .utf8)
+check("live: a background note follows its file",
+      spin(until: { otherDoc.storage.string == "Other note, changed.\n" }) && !otherDoc.edited)
+check("live: the background change waits to be highlighted", !otherDoc.pendingHighlight.isEmpty)
+check("live: the background change is undoable", otherDoc.undoManager.canUndo)
+live.switchTab(to: live.documents.firstIndex { $0 === otherDoc }!)
+check("live: showing the tab highlights its change", otherDoc.pendingHighlight.isEmpty && live.textView.string == "Other note, changed.\n")
+live.window?.close()
+
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

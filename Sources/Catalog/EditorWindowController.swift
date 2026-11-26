@@ -21,6 +21,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let sidebar = FolderSidebar()
     private let divider = SidebarDivider()
     private let preview = FilePreview()
+    private let browser = FileBrowser()
+    /// The icon browser covers the window; the pages beneath fade out.
+    private(set) var browsing = false
+    private var browseGeneration = 0
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarAnimationID: UUID?
     /// The folder the user opened. Without one, the sidebar browses
@@ -28,7 +32,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private(set) var workspace: Workspace?
     private(set) var sidebarCollapsed = true
     private(set) var sidebarWidth: CGFloat = 220
-    private(set) var mediaMode = false
     private var previewOrigin: NSRect?
     // The inline title is an always-editable NSTextView: one view for both
     // reading and editing means the glyphs cannot shift when editing starts
@@ -52,6 +55,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let contentGuide = NSLayoutGuide()
     private var pageActions: PageHostingView<PageActionsView>!
     private var backButton: PageHostingView<WikiBackButton>!
+    /// The article bar's search, mirroring Back at the bar's other end.
+    let wikiSearch = WikiSearch()
+    private var searchHost: PageHostingView<WikiSearchField>!
+    private var searchClickMonitor: Any?
     private var chatHost: PageHostingView<ChatDock>!
     private let dockHint = ChatDockHint()
     private var chatTrailing: NSLayoutConstraint!
@@ -67,7 +74,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// Whether the assistant opens docked as the sidebar, else floating.
     private(set) var agentPrefersDocked = false
     private(set) var agentWidth: CGFloat = 330
-    private var reloadingFromDisk = false
+    /// Set while the assistant's text goes in, so it isn't taken for typing.
+    private var applyingOutsideEdit = false
+    /// The assistant's edit playing into the current note.
+    private var liveEdit: LiveTextAnimation?
+    /// Skips the live edit to its end when the user types or clicks.
+    private var liveEditMonitor: Any?
+    /// One per open note's file, so outside writes show up as they land.
+    private var fileWatchers: [ObjectIdentifier: FileWatcher] = [:]
 
     init(documents: [Document] = [], app: AppDelegate?) {
         self.documents = documents.isEmpty ? [Document()] : documents
@@ -206,27 +220,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             guard let self else { return }
             self.sidebarCollapsed.toggle(); self.updateSidebar(animated: true); self.app?.sessionChanged()
         }
-        sidebar.onMediaMode = { [weak self] media in
-            guard let self else { return }
-            self.mediaMode = media; self.sidebar.mediaMode = media; self.updateSidebar(); self.refreshChrome()
-        }
-        sidebar.onRefresh = { [weak self] in
-            guard let self else { return }
-            self.workspace?.refreshIndex()
-            if self.currentDocument.kind == .folder { self.refreshChrome() }
-        }
-        sidebar.onOpen = { [weak self] url, _ in self?.openInCurrentTab(url) }
+        sidebar.onBrowse = { [weak self] in self?.setBrowsing(true) }
+        sidebar.onRefresh = { [weak self] in self?.workspace?.refreshIndex() }
+        sidebar.onOpen = { [weak self] url in self?.openInCurrentTab(url) }
         divider.onResize = { [weak self] width in
             guard let self else { return }
             self.sidebarCollapsed = width < 90
             if !self.sidebarCollapsed { self.sidebarWidth = max(150, min(width, (self.window?.frame.width ?? 640) - 240)) }
             self.updateSidebar(); self.app?.sessionChanged()
         }
-        preview.onNavigate = { [weak self] url in self?.openFolderTab(url) }
-        preview.onOpen = { [weak self] url, origin in
-            self?.previewOrigin = origin
-            self?.open(url: url, forceNewTab: true)
-            self?.previewOrigin = nil
+        browser.onToggle = { [weak self] in
+            guard let self else { return }
+            self.setBrowsing(!self.browsing)
+        }
+        browser.onOpen = { [weak self] url, origin in
+            guard let self else { return }
+            self.setBrowsing(false)
+            self.previewOrigin = origin
+            self.openInCurrentTab(url)
+            self.previewOrigin = nil
         }
         textView.referenceCandidates = { [weak self] query in
             guard let workspace = self?.workspace else { return [] }
@@ -247,11 +259,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         textView.onOpenReference = { [weak self] destination in self?.follow(destination) }
         textView.onOpenWikiLink = { [weak self] target in self?.followWikiLink(target) }
+        textView.onOpenQuote = { [weak self] destination, excerpt in self?.followQuote(destination, excerpt: excerpt) }
+        textView.documentURLProvider = { [weak self] in self?.currentDocument.url }
+        textView.onRequestSave = { [weak self] in self?.promptForSaveURL() }
+        textView.onEmbeddedQuoteCopied = { [weak self] in self?.flashStatus("Copied embedded quote") }
         textView.wikiLinkResolver = { [weak self] target in self?.resolveWikiLink(target) }
         pageActions = PageHostingView(rootView: PageActionsView(chrome: chrome))
         pageActions.sizingOptions = [.intrinsicContentSize]
-        backButton = PageHostingView(rootView: WikiBackButton(chrome: chrome))
+        backButton = PageHostingView(rootView: WikiBackButton { [chrome] in chrome.page?.goBack() })
         backButton.sizingOptions = [.intrinsicContentSize]
+        searchHost = PageHostingView(rootView: WikiSearchField(search: wikiSearch))
+        searchHost.sizingOptions = []
+        searchHost.hitRegion = { [weak self] view, point in
+            guard let self, !self.browsing else { return false }
+            return self.searchHitRect(in: view).map { self.wikiSearch.expanded ? $0.contains(point) : NSBezierPath(ovalIn: $0).contains(point) } ?? false
+        }
+        configureWikiSearch()
         chatHost = PageHostingView(rootView: ChatDock(chrome: chrome, session: agent, actions: agentActions(docked: false)))
         chatHost.sizingOptions = []
         chatHost.hitRegion = { [weak self] view, point in
@@ -265,7 +288,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         agentHost.sizingOptions = []
         agentContainer.wantsLayer = true
         agentContainer.layer?.masksToBounds = true
-        for view in [pageGlass, pageActions!, backButton!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
+        for view in [pageGlass, pageActions!, backButton!, searchHost!, chatHost!, dockHint, agentHost!, agentContainer, agentDivider] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
         agentContainer.addSubview(agentHost)
@@ -277,17 +300,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         configureAgent()
 
         // Back to front: pages, then the glass and its controls, then the
-        // tab strip over everything, then the assistant beside it all.
+        // tab strip over everything, then the assistant beside it all, and
+        // the article search over the floating assistant, for its suggestions.
         container.addSubview(scrollView)
         container.addSubview(pageGlass)
         container.addSubview(pageActions)
         container.addSubview(backButton)
         container.addSubview(tabBar)
         container.addSubview(statusPill)
+        browser.translatesAutoresizingMaskIntoConstraints = false
+        browser.isHidden = true
+        container.addSubview(browser)
         container.addSubview(agentContainer)
         container.addSubview(agentDivider)
         container.addSubview(dockHint)
         container.addSubview(chatHost)
+        container.addSubview(searchHost)
         agentWidthConstraint = agentContainer.widthAnchor.constraint(equalToConstant: 0)
         chatTrailing = chatHost.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: chatRest.trailing)
         chatBottom = chatHost.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: chatRest.bottom)
@@ -296,8 +324,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let preferredHeight = chatHost.heightAnchor.constraint(equalToConstant: ChatDock.panelSize.height)
         preferredWidth.priority = .defaultHigh
         preferredHeight.priority = .defaultHigh
+        let searchWidth = searchHost.widthAnchor.constraint(equalToConstant: WikiSearchField.width)
+        searchWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            preferredWidth, preferredHeight,
+            preferredWidth, preferredHeight, searchWidth,
             chatHost.widthAnchor.constraint(lessThanOrEqualTo: contentGuide.widthAnchor, constant: -2 * ChatDock.margin),
             chatHost.heightAnchor.constraint(lessThanOrEqualTo: container.heightAnchor, constant: -(PageMetrics.barBottom + 12 - chatRest.bottom)),
             chatHost.widthAnchor.constraint(greaterThanOrEqualToConstant: ChatDock.size),
@@ -331,6 +361,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             pageActions.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor),
             backButton.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor, constant: PageMetrics.inset),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            // Search mirrors Back: same top, same inset from the page's
+            // other edge (the docked assistant's, when it's open).
+            searchHost.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor, constant: -PageMetrics.inset),
+            searchHost.topAnchor.constraint(equalTo: container.topAnchor, constant: PageMetrics.barTop),
+            searchHost.heightAnchor.constraint(equalToConstant: WikiSearchField.height),
+            searchHost.leadingAnchor.constraint(greaterThanOrEqualTo: backButton.trailingAnchor, constant: 12),
+            browser.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            browser.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
+            browser.topAnchor.constraint(equalTo: container.topAnchor),
+            browser.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             tabBar.topAnchor.constraint(equalTo: container.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: agentContainer.leadingAnchor),
@@ -393,6 +433,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
         sidebar.setRoot(AgentSession.defaultDirectory)
         sidebar.isWatched = false
+        browser.setRoot(AgentSession.defaultDirectory)
+        browser.isWatched = false
         applyTheme()
         updateSidebar()
         updateAgentPanel()
@@ -405,7 +447,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func windowWillClose(_ notification: Notification) {
+        finishLiveEdit()
+        fileWatchers.removeAll()
         agent.store.detach(agent)
+        wikiSearch.expanded = false
         outlineTimer?.invalidate()
         documents.forEach(retire)
         preview.suspend()
@@ -513,6 +558,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     func switchTab(to index: Int) {
         guard documents.indices.contains(index) else { return }
+        if browsing { setBrowsing(false) }
+        wikiSearch.expanded = false
         textView.dismissReferences()
         commitTitleIfEditing()
         flushAutosave()
@@ -522,12 +569,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let doc = currentDocument
         // The old selection may lie beyond the incoming text.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        LiveHighlight.clear(textView)
         textView.layoutManager?.replaceTextStorage(doc.storage)
         textView.rehighlight()
         let length = (doc.storage.string as NSString).length
         let sel = NSIntersectionRange(doc.selection, NSRange(location: 0, length: length))
         textView.setSelectedRange(sel.location <= length ? sel : NSRange(location: 0, length: 0))
         textView.scrollRangeToVisible(textView.selectedRange())
+        showPendingHighlight()
         refreshChrome()
         focusCurrentPage()
     }
@@ -538,6 +587,43 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         case .wiki: window?.makeFirstResponder(currentDocument.wiki?.hostView)
         default: window?.makeFirstResponder(preview)
         }
+    }
+
+    /// Expands the icon browser from the sidebar across the window, or
+    /// returns it to the sidebar.
+    func setBrowsing(_ on: Bool, animated: Bool = true) {
+        guard on != browsing else { return }
+        browsing = on
+        browseGeneration += 1
+        let generation = browseGeneration
+        let animate = animated && window?.isVisible == true
+        // Everything beneath the browser except the assistant fades with it.
+        let pages = container.subviews.filter {
+            ![sidebarBackdrop, browser, divider, agentContainer, agentDivider, dockHint, chatHost].contains($0)
+        }
+        if on {
+            wikiSearch.expanded = false
+            browser.isHidden = false
+            // The browser's own fill and edge stand in for the backdrop's.
+            sidebarBackdrop.isHidden = true
+        }
+        browser.setExpanded(on, from: sidebarCollapsed ? 0 : sidebar.frame.width, animated: animate) { [weak self] in
+            guard let self, self.browseGeneration == generation, !on else { return }
+            self.browser.isHidden = true
+            self.sidebarBackdrop.isHidden = self.sidebarCollapsed
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animate ? FileBrowser.duration : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            pages.forEach { $0.animator().alphaValue = on ? 0 : 1 }
+        }
+        if on { window?.makeFirstResponder(browser.grid) } else { focusCurrentPage() }
+    }
+
+    /// Shows `url` in the icon browser, with Back leading up to the sidebar's folder.
+    func browse(_ url: URL) {
+        browser.show(url, within: sidebar.rootURL)
+        setBrowsing(true)
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -665,8 +751,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let doc = currentDocument
         // The old selection may lie beyond the incoming text.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        LiveHighlight.clear(textView)
         textView.layoutManager?.replaceTextStorage(doc.storage)
         textView.rehighlight()
+        showPendingHighlight()
         let length = doc.storage.length
         let selection = NSIntersectionRange(doc.selection, NSRange(location: 0, length: length))
         textView.setSelectedRange(selection.location <= length ? selection : NSRange(location: 0, length: 0))
@@ -715,7 +803,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if !editable {
             selectionToolbar.hide()
             if isWiki { preview.suspend() } else {
-                preview.show(doc, root: workspace?.root, mediaMode: mediaMode, from: previewOrigin)
+                preview.show(doc, from: previewOrigin)
             }
         } else { preview.suspend() }
         // Notes and images get the same glass cluster as Wikipedia pages.
@@ -725,6 +813,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         updateTabs()
         updateStatus()
         updateAgentContext()
+        updateFileWatchers()
         app?.sessionChanged()
     }
 
@@ -739,7 +828,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// tab; text-derived chrome (outline, share, word count) waits for a pause.
     func textDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextView) === textView else { return }
-        guard !reloadingFromDisk else { return }
+        guard !applyingOutsideEdit else { return }
         if !currentDocument.edited {
             currentDocument.edited = true
             window?.isDocumentEdited = true
@@ -788,6 +877,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     private func flushAutosave() {
+        finishLiveEdit()
         autosaveTimer?.invalidate()
         autosaveTimer = nil
         guard documents.indices.contains(current) else { return }
@@ -900,6 +990,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             content.layoutSubtreeIfNeeded()
         }
         sidebarBackdrop.configure(expanded: expanded, width: width, height: content.bounds.height, animated: animate)
+        // The browser's own fill covers the sidebar while it is open.
+        if browsing { sidebarBackdrop.isHidden = true }
         guard animate else { sidebarAnimationID = nil; return }
         if expanded { sidebar.fadeInContents() }
         tabBar.fadeInTabs()
@@ -912,7 +1004,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     /// Restores the sidebar: browsing `root`, or ~/Documents without one.
-    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat, media: Bool) {
+    func restoreWorkspace(root: URL?, collapsed: Bool, width: CGFloat) {
         textView.dismissReferences()
         textView.referencesEnabled = root != nil
         workspace = root.map(Workspace.init(root:))
@@ -920,8 +1012,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         workspace?.onIndexChanged = { [weak self] in self?.textView.rehighlight() }
         sidebar.isWatched = root != nil
         sidebar.setRoot(root ?? AgentSession.defaultDirectory)
-        sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600)); mediaMode = media
-        sidebar.mediaMode = media
+        browser.isWatched = root != nil
+        browser.setRoot(root ?? AgentSession.defaultDirectory)
+        sidebarCollapsed = collapsed; sidebarWidth = max(150, min(width, 600))
         updateSidebar()
         refreshChrome()
     }
@@ -929,9 +1022,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     func windowDidBecomeKey(_ notification: Notification) {
         agent.store.frontmost = agent
         sidebar.refresh()
-        // Pick up edits made elsewhere (another app, an agent in a terminal)
-        // to notes that have no unsaved changes here.
-        for doc in documents where doc.kind == .markdown && !doc.edited { reloadFromDisk(doc) }
+        browser.refresh()
+        // Pick up edits made elsewhere (another app, an agent in a terminal).
+        for doc in documents where doc.kind == .markdown { syncFromDisk(doc) }
     }
 
     @objc func closeFolder(_ sender: Any?) {
@@ -939,8 +1032,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.referencesEnabled = false
         workspace = nil
         sidebar.setRoot(AgentSession.defaultDirectory)
-        mediaMode = false
-        sidebar.mediaMode = false
+        browser.isWatched = false
+        browser.setRoot(AgentSession.defaultDirectory)
         updateSidebar()
         refreshChrome()
     }
@@ -950,12 +1043,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         panel.canChooseFiles = false; panel.canChooseDirectories = true
         panel.prompt = "Open Folder"
         if panel.runModal() == .OK, let url = panel.url { open(url: url) }
-    }
-
-    private func openFolderTab(_ url: URL) {
-        if let index = documents.firstIndex(where: { $0.url?.standardizedFileURL.path == url.standardizedFileURL.path && $0.kind == .folder }) { switchTab(to: index); return }
-        documents.append(Document(url: url))
-        switchTab(to: documents.count - 1)
     }
 
     @objc func openDocument(_ sender: Any?) {
@@ -976,9 +1063,46 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         case .file(let url, let anchor):
             openLink(url, anchor: anchor)
         case .external(let url):
-            NSWorkspace.shared.open(url)
+            if let article = WikiLink.destination(of: url) {
+                // Catalog's own article links open in a Wikipedia tab.
+                openArticleInNewTab(article.title, fragment: article.fragment, activate: true)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
         case .anchor(let anchor):
             scrollToAnchor(anchor)
+        case .unresolved:
+            NSSound.beep()
+        }
+    }
+
+    /// Opens an embedded quote's source: the article section, the media
+    /// file, or the note, where the quoted passage is found and flashed.
+    private func followQuote(_ destination: String, excerpt: String?) {
+        switch EmbeddedQuote.source(of: destination, from: currentDocument.url) {
+        case .wikipedia(let title, let section):
+            openArticleInNewTab(title, fragment: section, activate: true)
+        case .media(let url):
+            openLink(url, anchor: nil)
+        case .note(let url, let anchor):
+            openLink(url, anchor: anchor)
+            guard currentDocument.kind == .markdown, currentDocument.url?.standardizedFileURL == url.standardizedFileURL,
+                  let excerpt, !excerpt.isEmpty else { return }
+            let text = textView.string as NSString
+            // Prefer the passage under the linked heading, then anywhere.
+            let heading = anchor.flatMap { MarkdownHighlighter.headingRange(forAnchor: $0, in: text) }
+            var found = NSRange(location: NSNotFound, length: 0)
+            if let heading {
+                let after = NSRange(location: heading.location, length: text.length - heading.location)
+                found = text.range(of: excerpt, options: [], range: after)
+            }
+            if found.location == NSNotFound { found = text.range(of: excerpt) }
+            guard found.location != NSNotFound else { return }
+            scrollToLocation(found.location)
+            textView.setSelectedRange(found)
+            textView.showFindIndicator(for: found)
+        case .web(let url):
+            NSWorkspace.shared.open(url)
         case .unresolved:
             NSSound.beep()
         }
@@ -1033,9 +1157,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         let kind = FileKind.classify(url)
         if kind == .folder {
-            restoreWorkspace(root: url, collapsed: false, width: sidebarWidth, media: false)
+            restoreWorkspace(root: url, collapsed: false, width: sidebarWidth)
             app?.addRecentFile(url)
-            place(Document(url: url), replacingPlaceholder: true)
             return true
         }
         if forceNewTab {
@@ -1064,6 +1187,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if let draft = RecoveryStore.draft(forPath: url.path) {
             if draft.content != content {
                 let doc = Document(url: url, content: draft.content)
+                doc.diskText = content
                 doc.recoveryID = draft.id
                 doc.edited = true
                 return doc
@@ -1081,6 +1205,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         guard FileManager.default.fileExists(atPath: url.path), FileManager.default.isReadableFile(atPath: url.path) else {
             NSSound.beep(); return
         }
+        if FileKind.classify(url) == .folder { browse(url); return }
         if let index = documents.firstIndex(where: { $0.url?.standardizedFileURL.path == url.path }) {
             switchTab(to: index); return
         }
@@ -1109,9 +1234,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func restoreTab(url: URL) {
-        if FileKind.classify(url) == .folder {
-            place(Document(url: url), replacingPlaceholder: documents.count == 1)
-        } else { open(url: url) }
+        // Folders no longer open as tabs; older sessions may list them.
+        guard FileKind.classify(url) != .folder else { return }
+        open(url: url)
     }
 
     /// Reopens a draft left behind by a crashed or quit session as a tab.
@@ -1152,11 +1277,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         autosaveTimer?.invalidate()
         autosaveTimer = nil
         var ok = true
+        finishLiveEdit()
         for doc in documents where doc.edited && doc.kind == .markdown {
-            if let url = doc.url,
-               (try? doc.storage.string.write(to: url, atomically: true, encoding: .utf8)) != nil {
-                doc.edited = false
-                RecoveryStore.remove(doc)
+            if doc.url != nil, writeToDisk(doc) {
+                continue
             } else if doc.storage.length > 0 || doc.url != nil {
                 ok = RecoveryStore.write(doc) && ok
             } else {
@@ -1207,6 +1331,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             ?? currentDocument.customTitle.map { $0 + ".md" }
             ?? "untitled.md"
         if panel.runModal() == .OK, let url = panel.url {
+            if currentDocument.url != url { currentDocument.diskText = nil }
             currentDocument.url = url
             app?.addRecentFile(url)
             refreshChrome()
@@ -1216,12 +1341,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     @discardableResult
     private func saveCurrentDocument() -> Bool {
         let doc = currentDocument
-        guard doc.kind == .markdown, let url = doc.url else { return false }
+        guard doc.kind == .markdown, doc.url != nil else { return false }
         do {
-            try doc.storage.string.write(to: url, atomically: true, encoding: .utf8)
-            doc.edited = false
-            RecoveryStore.remove(doc)
-            window?.isDocumentEdited = false
+            guard writeToDisk(doc) else { throw CocoaError(.fileWriteUnknown) }
+            window?.isDocumentEdited = doc.edited
             // Saving clears only the edited mark; a new URL refreshed already.
             updateTabs()
             return true
@@ -1301,6 +1424,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// Binds a page's callbacks to this window.
     private func configure(_ page: WikiPage) {
         page.onChange = { [weak self] in self?.refreshChrome() }
+        page.onQuoteCopied = { [weak self, weak page] in
+            guard let self, self.currentDocument.wiki === page else { return }
+            self.flashStatus("Copied embedded quote")
+        }
+        page.openInNewTab = { [weak self, weak page] title, fragment, activate in
+            guard let self, self.currentDocument.wiki === page else { return }
+            self.openArticleInNewTab(title, fragment: fragment, activate: activate)
+        }
         page.onChromeChange = { [weak self, weak page] in
             guard let self, self.currentDocument.wiki === page else { return }
             self.updatePageGlass()
@@ -1337,13 +1468,70 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         default: scrolled = false
         }
         pageGlass.setShowing(scrolled)
-        // Folders keep the gallery's fast path: no glass, no bar. The home
-        // page has nothing to list or share.
+        // The home page has nothing to list or share.
         let hasActions = doc.kind == .markdown || doc.kind == .image || doc.wiki?.route != nil
         pageActions.isHidden = !hasActions || viewing
         statusPill.isHidden = !(doc.kind == .markdown || doc.wiki?.article != nil) || viewing
         updateChatDock()
         backButton.isHidden = doc.wiki?.canGoBack != true || viewing
+        // Search shows with Back, on articles: the home page has its own.
+        searchHost.isHidden = !showsWikiSearch
+        if searchHost.isHidden { wikiSearch.expanded = false }
+    }
+
+    /// Whether the bar's search button is on the page: Wikipedia articles,
+    /// not the home page, notes, images, or the image viewer.
+    var showsWikiSearch: Bool {
+        guard let page = currentDocument.wiki else { return false }
+        return page.route != nil && page.viewer == nil
+    }
+
+    private func configureWikiSearch() {
+        wikiSearch.onSubmit = { [weak self] title, target in self?.openArticle(title, target: target) }
+        wikiSearch.onExpandedChange = { [weak self] expanded in self?.wikiSearchExpandedChanged(expanded) }
+    }
+
+    /// The part of the search host that takes clicks: the circle at its
+    /// top-right corner, or the open field and its suggestions.
+    private func searchHitRect(in view: NSView) -> NSRect? {
+        let control = PageMetrics.control
+        let bounds = view.bounds
+        guard wikiSearch.expanded else {
+            return NSRect(x: bounds.maxX - control, y: view.isFlipped ? 0 : bounds.maxY - control, width: control, height: control)
+        }
+        let rows = wikiSearch.suggestions.count
+        let height = rows == 0 ? control : min(bounds.height, control + 1 + CGFloat(rows) * WikiSearchField.rowHeight + 16)
+        return NSRect(x: 0, y: view.isFlipped ? 0 : bounds.maxY - height, width: bounds.width, height: height)
+    }
+
+    /// Opens the bar's search field with the cursor in it.
+    func expandWikiSearch() {
+        guard showsWikiSearch else { return }
+        window?.makeFirstResponder(searchHost)
+        wikiSearch.expand()
+    }
+
+    /// While open, a click anywhere else folds the field back into its
+    /// circle; on folding, the page gets its focus back.
+    private func wikiSearchExpandedChanged(_ expanded: Bool) {
+        if expanded {
+            guard searchClickMonitor == nil else { return }
+            searchClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                guard let self, event.window === self.window else { return event }
+                let point = self.searchHost.convert(event.locationInWindow, from: nil)
+                if self.searchHost.isHidden || !(self.searchHitRect(in: self.searchHost)?.contains(point) ?? false) {
+                    self.wikiSearch.expanded = false
+                }
+                return event
+            }
+        } else {
+            if let searchClickMonitor { NSEvent.removeMonitor(searchClickMonitor) }
+            searchClickMonitor = nil
+            if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: searchHost)
+                || ((responder as? NSTextView)?.delegate as? NSView)?.isDescendant(of: searchHost) == true {
+                focusCurrentPage()
+            }
+        }
     }
 
     /// Contents and Share for the page on screen.
@@ -1427,8 +1615,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     /// Opens a Wikipedia article: in the current Wikipedia tab, else a new one.
-    func openArticle(_ title: String) {
-        if let page = currentDocument.wiki {
+    /// `.newTab` always adds one, beside the current tab.
+    func openArticle(_ title: String, target: LinkTarget = .currentTab) {
+        if case .newTab(let activate) = target {
+            openArticleInNewTab(title, activate: activate)
+        } else if let page = currentDocument.wiki {
             page.open(title)
         } else {
             let page = WikiPage(style: .wikipedia)
@@ -1438,10 +1629,68 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
     }
 
-    @objc func wikiBack(_ sender: Any?) { currentDocument.wiki?.goBack() }
+    /// A ⌘-clicked link: the article opens in a new tab after the current
+    /// one (and after tabs it already opened, keeping them in click order).
+    /// In the background, the current tab keeps focus and the new page
+    /// loads its article so the strip shows its title.
+    func openArticleInNewTab(_ title: String, fragment: String? = nil, activate: Bool) {
+        let page = WikiPage(style: .wikipedia)
+        page.open(title, fragment: fragment)
+        guard page.route != nil else { return }
+        let doc = Document(wiki: page)
+        let opener = currentDocument
+        doc.opener = opener
+        var index = current + 1
+        while index < documents.count, documents[index].opener === opener { index += 1 }
+        documents.insert(doc, at: index)
+        if activate {
+            switchTab(to: index)
+        } else {
+            configure(page)
+            page.prefetch()
+            updateTabs()
+            app?.sessionChanged()
+        }
+    }
 
+    // MARK: - Embedded quotes
+
+    /// ⇧⌘C away from a note's text (a note's text view answers it itself):
+    /// a Wikipedia tab quotes the selected text, or else the section being
+    /// read; an image tab quotes the image.
+    @objc func copyAsEmbeddedQuote(_ sender: Any?) {
+        let doc = currentDocument
+        if let page = doc.wiki, page.copyQuote(selection: wikiSelection()) { return }
+        if doc.kind == .image, let url = doc.url {
+            EmbeddedQuote.write(EmbeddedQuote.mediaQuote(file: url), to: .general)
+            return
+        }
+        NSSound.beep()
+    }
+
+    /// Text selected in the Wikipedia reader. SwiftUI's selectable text
+    /// selects through the window's field editor, which holds the whole
+    /// paragraph, so this also says which block the selection is in.
+    private func wikiSelection() -> (text: String, block: String)? {
+        guard let host = currentDocument.wiki?.hostView, let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+              // Not the assistant's message field.
+              ((editor.delegate as? NSView) ?? editor).isDescendant(of: host) else { return nil }
+        let range = editor.selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= (editor.string as NSString).length else { return nil }
+        return ((editor.string as NSString).substring(with: range), editor.string)
+    }
+
+    @objc func wikiBack(_ sender: Any?) {
+        if browsing { browser.goBack() } else { currentDocument.wiki?.goBack() }
+    }
+
+    /// On an article, opens the bar's search field; on the home page,
+    /// focuses its search; elsewhere, opens a Wikipedia tab.
     @objc func searchWikipedia(_ sender: Any?) {
-        if let page = currentDocument.wiki { page.goHome() } else { newWikiTab(sender) }
+        guard let page = currentDocument.wiki else { return newWikiTab(sender) }
+        guard page.route != nil else { return page.goHome() }
+        if page.viewer != nil { page.viewer = nil }
+        expandWikiSearch()
     }
 
     @objc func randomArticle(_ sender: Any?) {
@@ -1459,9 +1708,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         agent.openFile = { [weak self] url in
             guard let self else { return }
-            if FileKind.classify(url) == .folder { self.openFolderTab(url) } else { self.open(url: url, forceNewTab: true) }
+            if FileKind.classify(url) == .folder { self.browse(url) } else { self.open(url: url, forceNewTab: true) }
         }
-        agent.openArticle = { [weak self] title in self?.openArticle(title) }
+        agent.openArticle = { [weak self] title, target in self?.openArticle(title, target: target) }
         agent.prepareToSend = { [weak self] in self?.saveNotesForAgent() }
     }
 
@@ -1618,9 +1867,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                                 text: includingText ? doc.storage.string : nil, workingDirectory: directory)
         case .image:
             return AgentContext(kind: .image, title: doc.name, fileURL: doc.url, workingDirectory: directory)
-        case .folder:
-            return AgentContext(kind: .folder, title: doc.name, fileURL: doc.url, workingDirectory: directory)
-        case .unsupported:
+        case .unsupported, .folder:
             return AgentContext(kind: .other, title: doc.name, fileURL: doc.url, workingDirectory: directory)
         }
     }
@@ -1644,13 +1891,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         guard let url = notification.userInfo?["url"] as? URL else { return }
         for doc in documents where doc.kind == .markdown && doc.edited {
             guard let docURL = doc.url, Self.samePath(docURL, url) else { continue }
-            if doc === currentDocument {
-                flushAutosave()
-            } else if (try? doc.storage.string.write(to: docURL, atomically: true, encoding: .utf8)) != nil {
-                doc.edited = false
-                RecoveryStore.remove(doc)
-            }
+            if doc === currentDocument { flushAutosave() } else { writeToDisk(doc) }
         }
+        window?.isDocumentEdited = currentDocument.edited
+        updateTabs()
     }
 
     /// Before a message goes out, unsaved edits to named notes reach disk,
@@ -1658,17 +1902,43 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private func saveNotesForAgent() {
         commitTitleIfEditing()
         flushAutosave()
-        for doc in documents where doc.kind == .markdown && doc.edited {
-            guard let url = doc.url, (try? doc.storage.string.write(to: url, atomically: true, encoding: .utf8)) != nil else { continue }
-            doc.edited = false
-            RecoveryStore.remove(doc)
-        }
+        for doc in documents where doc.kind == .markdown && doc.edited && doc.url != nil { writeToDisk(doc) }
         window?.isDocumentEdited = currentDocument.edited
         updateTabs()
     }
 
-    /// The assistant changed files: follow moves, reload open notes, and
-    /// refresh the sidebar, so changes appear without reopening anything.
+    /// Writes a note to its file. A change made there by something else
+    /// since it was last read (the assistant's) is folded in first rather
+    /// than overwritten. Writes nothing when the file already matches.
+    @discardableResult
+    private func writeToDisk(_ doc: Document) -> Bool {
+        guard doc.kind == .markdown, let url = doc.url else { return false }
+        if liveEdit?.doc === doc { finishLiveEdit() }
+        let disk = try? String(contentsOf: url, encoding: .utf8)
+        if let base = doc.diskText, let disk, disk != base, disk != doc.storage.string {
+            syncFromDisk(doc, animated: false)
+        }
+        let text = doc.storage.string
+        if disk != text {
+            let previous = doc.diskText
+            // Recorded first, so the watcher's echo of this write is a no-op.
+            doc.diskText = text
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                doc.diskText = previous
+                return false
+            }
+        } else {
+            doc.diskText = text
+        }
+        doc.edited = false
+        RecoveryStore.remove(doc)
+        return true
+    }
+
+    /// The assistant changed files: follow moves, bring open notes up to
+    /// date, and refresh the sidebar, so changes appear without reopening.
     @objc private func agentDidModifyFiles(_ notification: Notification) {
         let urls = notification.userInfo?["urls"] as? [URL] ?? []
         if let from = notification.userInfo?["from"] as? URL, let to = notification.userInfo?["to"] as? URL {
@@ -1682,50 +1952,229 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                 }
             }
         }
-        var changedCurrent = false
         // No URLs: a CLI changed files on its own, so recheck every open note.
         let everything = urls.isEmpty
-        for doc in documents {
+        for doc in documents where doc.kind == .markdown {
             guard let docURL = doc.url, everything || urls.contains(where: { Self.samePath($0, docURL) }) else { continue }
-            if everything, doc.kind == .markdown,
-               (try? String(contentsOf: docURL, encoding: .utf8)) == doc.storage.string { continue }
-            if doc.kind == .markdown { reloadFromDisk(doc) }
-            if doc === currentDocument { changedCurrent = true }
+            syncFromDisk(doc)
         }
         sidebar.refresh()
         refreshChrome()
-        if changedCurrent { flashStatus("updated by assistant") }
     }
 
-    /// Replaces a note's text with its file's, keeping it undoable when the
-    /// note is on screen. Notes with unsaved edits are left alone.
-    private func reloadFromDisk(_ doc: Document) {
-        guard doc.kind == .markdown, !doc.edited, let url = doc.url,
-              let text = try? String(contentsOf: url, encoding: .utf8), text != doc.storage.string else { return }
-        let full = NSRange(location: 0, length: doc.storage.length)
+    /// Keeps a watcher on each open note's file; outside writes (Claude
+    /// Code, Codex, another app) reach the note within a moment.
+    private func updateFileWatchers() {
+        var wanted: [ObjectIdentifier: URL] = [:]
+        for doc in documents where doc.kind == .markdown {
+            if let url = doc.url { wanted[ObjectIdentifier(doc)] = url.standardizedFileURL }
+        }
+        for (key, watcher) in fileWatchers where wanted[key] != watcher.url { fileWatchers[key] = nil }
+        for (key, url) in wanted where fileWatchers[key] == nil {
+            fileWatchers[key] = FileWatcher(url: url) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let doc = self.documents.first(where: { ObjectIdentifier($0) == key }) else { return }
+                    self.syncFromDisk(doc)
+                }
+            }
+        }
+    }
+
+    /// Brings a note up to date with its file after something else wrote
+    /// it. Unsaved edits that don't overlap the change are kept (a
+    /// three-way merge); ones that do are replaced, recoverable with Undo.
+    func syncFromDisk(_ doc: Document, animated: Bool = true) {
+        guard doc.kind == .markdown, let url = doc.url,
+              let disk = try? String(contentsOf: url, encoding: .utf8) else { return }
+        // Already playing this version in: let it finish.
+        if let liveEdit, liveEdit.doc === doc {
+            if liveEdit.target == disk && animated { return }
+            finishLiveEdit()
+        }
+        let buffer = doc.storage.string
+        // Nothing new on disk (often the echo of our own save).
+        if disk == doc.diskText && (doc.edited || buffer == disk) { return }
+        if buffer == disk {
+            doc.diskText = disk
+            if doc.edited {
+                doc.edited = false
+                RecoveryStore.remove(doc)
+                if doc === currentDocument { window?.isDocumentEdited = false }
+                updateTabs()
+            }
+            return
+        }
+        var target = disk
+        var keepsEdits = false
+        var replacedEdits = false
+        if doc.edited {
+            if let base = doc.diskText, let merged = TextDiff.merge(base: base, mine: buffer, theirs: disk) {
+                target = merged
+                keepsEdits = merged != disk
+            } else {
+                replacedEdits = true
+            }
+        }
+        doc.diskText = disk
+        applyOutsideText(target, to: doc, animated: animated, keepsEdits: keepsEdits)
         if doc === currentDocument {
-            let selection = textView.selectedRange()
-            reloadingFromDisk = true
-            if textView.shouldChangeText(in: full, replacementString: text) {
-                doc.storage.replaceCharacters(in: full, with: text)
+            flashStatus(replacedEdits ? "changed on disk · ⌘Z restores your edits" : "updated")
+        }
+    }
+
+    /// Puts outside text into a note as one undoable step: typed in live
+    /// when the note is on screen, at once in a background tab (highlighted
+    /// when it's next shown).
+    private func applyOutsideText(_ target: String, to doc: Document, animated: Bool, keepsEdits: Bool) {
+        let onScreen = doc === currentDocument && textView.textStorage === doc.storage
+        if onScreen && animated && !browsing {
+            startLiveEdit(doc, target: target, keepsEdits: keepsEdits)
+            return
+        }
+        let original = doc.storage.string
+        guard let span = TextDiff.changedSpan(original as NSString, target as NSString) else { return }
+        let replacement = (target as NSString).substring(with: span.new)
+        replaceUndoably(doc, range: span.old, with: replacement, fromAssistant: true)
+        if onScreen {
+            textView.rehighlight()
+            LiveHighlight.fade(span.new.length > 0 ? [span.new] : [], in: textView)
+        } else if span.new.length > 0 {
+            doc.pendingHighlight = [span.new]
+        }
+        completeOutsideEdit(doc, keepsEdits: keepsEdits)
+    }
+
+    private func startLiveEdit(_ doc: Document, target: String, keepsEdits: Bool) {
+        finishLiveEdit()
+        textView.breakUndoCoalescing()
+        let animation = LiveTextAnimation(doc: doc, textView: textView, target: target, keepsEdits: keepsEdits,
+            replace: { [weak self] range, text in self?.replaceAsAssistant(range, with: text) },
+            completion: { [weak self] animation in self?.liveEditFinished(animation) })
+        liveEdit = animation
+        // Typing or clicking in the note skips to the end; scrolling stops
+        // the view following along.
+        liveEditMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .scrollWheel]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, let liveEdit = self.liveEdit, event.window === self.window else { return }
+                let inNote = self.scrollView.bounds.contains(self.scrollView.convert(event.locationInWindow, from: nil))
+                switch event.type {
+                case .scrollWheel:
+                    if inNote { liveEdit.followsEdits = false }
+                case .keyDown:
+                    let responder = self.window?.firstResponder
+                    if responder === self.textView || responder === self.titleView { self.finishLiveEdit() }
+                default:
+                    if inNote { self.finishLiveEdit() }
+                }
+            }
+            return event
+        }
+        animation.start()
+    }
+
+    /// Skips the current live edit to its end.
+    func finishLiveEdit() {
+        liveEdit?.finish()
+    }
+
+    private func liveEditFinished(_ animation: LiveTextAnimation) {
+        if let monitor = liveEditMonitor { NSEvent.removeMonitor(monitor) }
+        liveEditMonitor = nil
+        if liveEdit === animation { liveEdit = nil }
+        let doc = animation.doc
+        let final = doc.storage.string
+        // The whole edit is one undo step, back to the note as it was.
+        if final != animation.original,
+           let span = TextDiff.changedSpan(final as NSString, animation.original as NSString) {
+            let previous = (animation.original as NSString).substring(with: span.new)
+            doc.undoManager.beginUndoGrouping()
+            doc.undoManager.registerUndo(withTarget: self) { controller in
+                controller.replaceUndoably(doc, range: span.old, with: previous, fromAssistant: false)
+            }
+            doc.undoManager.setActionName("Assistant Edit")
+            doc.undoManager.endUndoGrouping()
+        }
+        if doc === currentDocument && textView.textStorage === doc.storage { textView.rehighlight() }
+        completeOutsideEdit(doc, keepsEdits: animation.keepsEdits)
+    }
+
+    private func completeOutsideEdit(_ doc: Document, keepsEdits: Bool) {
+        doc.edited = keepsEdits
+        if !keepsEdits { RecoveryStore.remove(doc) }
+        if doc === currentDocument {
+            window?.isDocumentEdited = keepsEdits
+            updatePageActions()
+            updateStatus()
+            if keepsEdits { scheduleAutosave() }
+        }
+        updateTabs()
+    }
+
+    /// One change made by the assistant's live edit: through the text view
+    /// (so styling follows), uncounted by undo and the edited mark.
+    private func replaceAsAssistant(_ range: NSRange, with text: String) {
+        guard let storage = textView.textStorage else { return }
+        let undo = currentDocument.undoManager
+        undo.disableUndoRegistration()
+        applyingOutsideEdit = true
+        if textView.shouldChangeText(in: range, replacementString: text) {
+            storage.replaceCharacters(in: range, with: text)
+            textView.didChangeText()
+        }
+        applyingOutsideEdit = false
+        undo.enableUndoRegistration()
+    }
+
+    /// Replaces text in a note, registering the reverse for undo (and redo).
+    /// From undo or redo it counts as an edit of the user's, to be saved.
+    private func replaceUndoably(_ doc: Document, range: NSRange, with text: String, fromAssistant: Bool) {
+        if liveEdit?.doc === doc { finishLiveEdit() }
+        let ns = doc.storage.string as NSString
+        guard NSMaxRange(range) <= ns.length else { return }
+        let previous = ns.substring(with: range)
+        let inverse = NSRange(location: range.location, length: (text as NSString).length)
+        let onScreen = doc === currentDocument && textView.textStorage === doc.storage
+        // Its own step, apart from any typing still coalescing.
+        if onScreen && fromAssistant { textView.breakUndoCoalescing() }
+        doc.undoManager.registerUndo(withTarget: self) { controller in
+            controller.replaceUndoably(doc, range: inverse, with: previous, fromAssistant: false)
+        }
+        doc.undoManager.setActionName("Assistant Edit")
+        if onScreen {
+            doc.undoManager.disableUndoRegistration()
+            applyingOutsideEdit = fromAssistant
+            if textView.shouldChangeText(in: range, replacementString: text) {
+                doc.storage.replaceCharacters(in: range, with: text)
                 textView.didChangeText()
             }
-            reloadingFromDisk = false
-            textView.rehighlight()
-            let length = (text as NSString).length
-            textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
-            window?.isDocumentEdited = false
+            applyingOutsideEdit = false
+            doc.undoManager.enableUndoRegistration()
+            if !fromAssistant {
+                textView.setSelectedRange(inverse)
+                textView.scrollRangeToVisible(inverse)
+            }
         } else {
-            doc.storage.replaceCharacters(in: full, with: text)
-            let length = (text as NSString).length
+            doc.storage.replaceCharacters(in: range, with: text)
+            let length = doc.storage.length
             doc.selection = NSRange(location: min(doc.selection.location, length), length: 0)
+            if !fromAssistant {
+                doc.edited = true
+                updateTabs()
+            }
         }
-        doc.edited = false
-        RecoveryStore.remove(doc)
+    }
+
+    /// Highlights what changed in a note while its tab was hidden.
+    private func showPendingHighlight() {
+        let doc = currentDocument
+        guard !doc.pendingHighlight.isEmpty else { return }
+        let ranges = doc.pendingHighlight
+        doc.pendingHighlight = []
+        LiveHighlight.fade(ranges, in: textView, hold: 0.9)
     }
 
     private func flashStatus(_ message: String) {
-        guard currentDocument.kind == .markdown else { return }
+        guard currentDocument.kind == .markdown || currentDocument.wiki?.article != nil else { return }
         statusLabel.stringValue = "\(currentDocument.name) · \(message)"
         statusLabel.textColor = Theme.code.withAlphaComponent(0.9)
         savedFlashTimer?.invalidate()
@@ -1765,7 +2214,7 @@ extension EditorWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(wikiBack(_:)):
-            return currentDocument.wiki?.canGoBack == true
+            return browsing ? browser.canGoBack : currentDocument.wiki?.canGoBack == true
         case #selector(toggleAgent(_:)):
             item.title = agentOpen ? "Hide Assistant" : "Show Assistant"
             return true
@@ -1775,6 +2224,11 @@ extension EditorWindowController: NSMenuItemValidation {
             return currentDocument.kind == .markdown
         case #selector(moveTabToNewWindow(_:)):
             return documents.count > 1
+        case #selector(copyAsEmbeddedQuote(_:)):
+            // In a Wikipedia tab without a selection, the section is quoted.
+            let wholeSection = currentDocument.wiki != nil && wikiSelection() == nil
+            item.title = wholeSection ? "Copy Section as Embedded Quote" : "Copy as Embedded Quote"
+            return currentDocument.wiki?.article != nil || currentDocument.kind == .image
         default:
             return true
         }

@@ -26,6 +26,7 @@ enum AgentPrompt {
     tables, or code fences in chat (notes you write may use full Markdown).
     - When you mention a person, place, event, or idea that has its own Wikipedia article, you may link it as \
     [Name](encyclopedia://wiki/Exact_Article_Title), with underscores for spaces, so the user can open it.
+    - \(EmbeddedQuote.agentGuide) For a Wikipedia section, quote_wikipedia_section returns the quote ready to insert.
     - Be concise unless the user asks for depth.
     """
 

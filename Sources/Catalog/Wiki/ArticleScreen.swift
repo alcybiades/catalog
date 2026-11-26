@@ -62,7 +62,7 @@ struct ArticleScreen: View {
             FailureView(error: error, query: route.query) { attempt += 1 } searchAgain: { page.goHome() }
                 .transition(.opacity)
         case .loaded(let article):
-            ArticleBody(article: article, font: font) { item in
+            ArticleBody(article: article, route: route.id, font: font) { item in
                 withAnimation(.easeInOut(duration: 0.2)) { page.viewer = item }
             }
             .transition(.opacity.combined(with: .offset(y: 12)))
@@ -72,8 +72,10 @@ struct ArticleScreen: View {
     // MARK: Loading
 
     private func load() async {
+        // A background tab's article may have loaded before it was shown.
         if let cached = page.cachedArticle(for: route), attempt == 0 {
             phase = .loaded(cached)
+            await scrollToFragment(in: cached)
             return
         }
         if attempt > 0 { withAnimation { phase = .loading } }
@@ -84,20 +86,23 @@ struct ArticleScreen: View {
             guard !Task.isCancelled else { return }
             withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) { phase = .loaded(article) }
             page.loaded(article, for: route)
-            if let fragment = route.fragment {
-                let wanted = fragment.replacingOccurrences(of: " ", with: "_").lowercased()
-                if let section = article.blocks.lazy.compactMap({ block -> String? in
-                    if case .heading(_, _, let anchor) = block.kind, anchor.lowercased() == wanted { return anchor }
-                    return nil
-                }).first {
-                    try? await Task.sleep(for: .milliseconds(450))
-                    page.scrollTarget = section
-                }
-            }
+            await scrollToFragment(in: article)
         } catch is CancellationError {
         } catch {
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut) { phase = .failed(error) }
+        }
+    }
+
+    private func scrollToFragment(in article: Article) async {
+        guard let fragment = route.fragment else { return }
+        let wanted = fragment.replacingOccurrences(of: " ", with: "_").lowercased()
+        if let section = article.blocks.lazy.compactMap({ block -> String? in
+            if case .heading(_, _, let anchor) = block.kind, anchor.lowercased() == wanted { return anchor }
+            return nil
+        }).first {
+            try? await Task.sleep(for: .milliseconds(450))
+            page.scrollTarget = section
         }
     }
 }
@@ -106,8 +111,11 @@ struct ArticleScreen: View {
 
 private struct ArticleBody: View {
     let article: Article
+    /// The visit this body shows, for tracking the blocks on screen.
+    let route: UUID
     let font: ReaderFont
     var onImage: (ViewerItem) -> Void
+    @Environment(WikiPage.self) private var page
 
     private enum Row: Identifiable {
         case block(Block)
@@ -142,6 +150,10 @@ private struct ArticleBody: View {
                         .id("infobox")
                 case .block(let block):
                     BlockView(block: block, font: font, onImage: onImage)
+                        .environment(\.wikiBlockID, block.id)
+                        .onScrollVisibilityChange(threshold: 0.3) { visible in
+                            page.blockVisibility(block.id, visible: visible, route: route)
+                        }
                         .id(anchor(of: block) ?? "block-\(block.id)")
                 }
             }
@@ -168,7 +180,7 @@ private struct ArticleBody: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let image = article.leadImage {
-                ImageTile(image: image, maxHeight: 380) { onImage(ViewerItem(image: image, caption: article.leadCaption)) }
+                ImageTile(image: image, maxHeight: 380, caption: article.leadCaption) { onImage(ViewerItem(image: image, caption: article.leadCaption)) }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 10)
                 if let caption = article.leadCaption {
@@ -179,6 +191,7 @@ private struct ArticleBody: View {
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
             }
         }

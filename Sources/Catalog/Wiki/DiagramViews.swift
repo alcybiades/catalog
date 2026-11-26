@@ -296,6 +296,7 @@ struct CladogramView: View {
                             .frame(width: lineHeight * 1.6 * image.aspectRatio, height: lineHeight * 1.6)
                     }
                     .buttonStyle(PressableStyle())
+                    .contextMenu { WikiImageMenu(image: image, caption: node.text) }
                 }
                 if !isLeaf && node.label == nil {
                     Circle().fill(WikiTheme.secondary.opacity(0.6)).frame(width: 5, height: 5)
@@ -357,6 +358,7 @@ struct LocationMapView: View {
                 }
             }
             .buttonStyle(PressableStyle())
+            .contextMenu { WikiImageMenu(image: map.image, caption: caption) }
             .frame(maxWidth: .infinity)
             if let caption {
                 Text(WikiTheme.styled(caption))
@@ -367,6 +369,7 @@ struct LocationMapView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity)
+                    .textSelection(.enabled)
             }
         }
         .padding(.vertical, 6)

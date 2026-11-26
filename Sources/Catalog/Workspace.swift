@@ -186,16 +186,20 @@ enum WorkspaceItemKind {
 final class FileNode {
     let url: URL
     let isDirectory: Bool
+    /// Versions the icon browser's cached thumbnails.
+    let modified: Date?
     private var cachedChildren: [FileNode]?
+    private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
     init(_ url: URL) {
         self.url = url
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let values = try? url.resourceValues(forKeys: Self.keys)
         // Never recurse through symlinks (cycles and trees outside the workspace).
         isDirectory = values?.isDirectory == true && values?.isSymbolicLink != true
+        modified = values?.contentModificationDate
     }
     var children: [FileNode] {
         if let cachedChildren { return cachedChildren }
-        let urls = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])) ?? []
+        let urls = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: Array(Self.keys), options: [.skipsHiddenFiles])) ?? []
         let nodes = urls.map(FileNode.init).sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending

@@ -174,14 +174,18 @@ struct ChatDock: View {
             let glass = open ? full : CGSize(width: Self.size, height: Self.size)
             let shape = RoundedRectangle(cornerRadius: Self.size / 2, style: .continuous)
             ZStack {
-                // Glass alone doesn't reliably blur the AppKit text beneath;
-                // once open, a near-opaque backdrop keeps the chat legible.
-                WikiTheme.background.opacity(open ? 0.94 : 0)
-                    .frame(width: glass.width, height: glass.height)
-                    .clipShape(shape)
-                    .glassEffect(.regular.interactive(!open), in: shape)
-                    .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
-                    .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
+                // SwiftUI glass this large doesn't blur the page beneath, so
+                // the open panel crossfades to AppKit glass.
+                ZStack {
+                    Color.clear
+                        .glassEffect(.regular.interactive(), in: shape)
+                        .opacity(open ? 0 : 1)
+                    PanelGlass(tint: Self.panelTint, cornerRadius: Self.size / 2)
+                        .opacity(open ? 1 : 0)
+                }
+                .frame(width: glass.width, height: glass.height)
+                .shadow(color: .black.opacity(open ? 0.3 : 0), radius: 18, y: 6)
+                .frame(width: full.width, height: full.height, alignment: .bottomTrailing)
                 AgentPanel(session: session, style: .floating, actions: actions)
                     .frame(width: full.width, height: full.height)
                     .mask(alignment: .bottomTrailing) { shape.frame(width: glass.width, height: glass.height) }
@@ -208,6 +212,34 @@ struct ChatDock: View {
         .animation(chrome.chatMorphAnimated ? Self.morph : nil, value: chrome.chatFloating)
         .tint(WikiTheme.foreground)
         .preferredColorScheme(WikiTheme.colorScheme)
+    }
+
+    /// The window's own tint keeps the chat legible over the page; opaque
+    /// themes tint more, so the glass reads as their paper.
+    static var panelTint: NSColor {
+        let palette = Theme.palette
+        return palette.background.withAlphaComponent(palette.backgroundOpacity < 1 ? 0.35 : 0.6)
+    }
+}
+
+/// AppKit Liquid Glass for large SwiftUI panels (the open assistant, the
+/// home search's suggestions), which SwiftUI's glass doesn't blur beneath.
+struct PanelGlass: NSViewRepresentable {
+    let tint: NSColor
+    let cornerRadius: CGFloat
+
+    /// Leaves clicks to the SwiftUI panel drawn over it.
+    final class Glass: NSGlassEffectView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> Glass {
+        Glass()
+    }
+
+    func updateNSView(_ glass: Glass, context: Context) {
+        glass.tintColor = tint
+        glass.cornerRadius = cornerRadius
     }
 }
 
@@ -259,8 +291,8 @@ final class PageGlassBackdrop: NSView, ThemeRefreshing {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        fade.colors = [NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.85).cgColor, NSColor.clear.cgColor]
-        fade.locations = [0, 0.55, 1]
+        fade.colors = [NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.72).cgColor, NSColor.clear.cgColor]
+        fade.locations = [0, 0.5, 1]
         // Layer coordinates are bottom-up here: opaque at the window's top.
         fade.startPoint = CGPoint(x: 0.5, y: 1)
         fade.endPoint = CGPoint(x: 0.5, y: 0)
@@ -284,8 +316,9 @@ final class PageGlassBackdrop: NSView, ThemeRefreshing {
 
     func applyTheme() { glass?.tintColor = Self.tint }
 
-    /// A touch of the window's own tint keeps text over the glass legible.
-    private static var tint: NSColor { Theme.background.withAlphaComponent(0.35) }
+    /// Just a touch of the window's own tint: the blur already keeps text
+    /// over the glass legible, and more reads as a dark shadow under the bar.
+    private static var tint: NSColor { Theme.background.withAlphaComponent(0.22) }
 
     func setShowing(_ showing: Bool) {
         guard showing != isShowing else { return }
@@ -338,8 +371,9 @@ final class PageHostingView<Content: View>: NSHostingView<Content> {
 // MARK: - Wikipedia tab
 
 /// The root of a Wikipedia (or home) tab: the page and its full-window
-/// image viewer. Its controls (Back, actions) live above the window's
-/// glass, in `WikiBackButton` and `PageActionsView`.
+/// image viewer. Its controls (Back, search, actions) live above the
+/// window's glass, in `WikiBackButton`, `WikiSearchField`, and
+/// `PageActionsView`.
 struct WikiTabView: View {
     let page: WikiPage
 
@@ -375,10 +409,10 @@ struct WikiTabView: View {
 
 /// Wikipedia's Back button, at the start of the bar under the tabs.
 struct WikiBackButton: View {
-    let chrome: WindowChrome
+    let action: () -> Void
 
     var body: some View {
-        Button { chrome.page?.goBack() } label: {
+        Button(action: action) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(WikiTheme.foreground)
@@ -390,5 +424,212 @@ struct WikiBackButton: View {
         .help("Back (⌘[)")
         .preferredColorScheme(WikiTheme.colorScheme)
         .fixedSize()
+    }
+}
+
+/// The article bar's search: a glass circle at the end of the bar, mirroring
+/// Back, that widens into a search field. Return opens the title in this
+/// tab; ⌘Return in a background tab and ⌘⇧Return in a new one, like links.
+@MainActor @Observable
+final class WikiSearch {
+    var expanded = false {
+        didSet {
+            guard expanded != oldValue else { return }
+            if !expanded { reset() }
+            onExpandedChange?(expanded)
+        }
+    }
+    var query = ""
+    var suggestions: [String] = []
+    var highlighted: Int?
+    private(set) var focusRequest = 0
+
+    /// Opens a title where the keys held at Return say.
+    @ObservationIgnored var onSubmit: ((String, LinkTarget) -> Void)?
+    /// The window watches for clicks away and restores the page's focus.
+    @ObservationIgnored var onExpandedChange: ((Bool) -> Void)?
+
+    func expand() {
+        expanded = true
+        focusRequest += 1
+    }
+
+    /// The highlighted suggestion, or else the typed text.
+    var submission: String? {
+        if let highlighted, suggestions.indices.contains(highlighted) { return suggestions[highlighted] }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Folds away and opens the submission; false if there's nothing to open.
+    @discardableResult
+    func submit(_ title: String? = nil, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard let title = title ?? submission else { return false }
+        expanded = false
+        onSubmit?(title, LinkTarget(modifiers: modifiers))
+        return true
+    }
+
+    func moveHighlight(_ delta: Int) -> Bool {
+        guard !suggestions.isEmpty else { return false }
+        let next = (highlighted ?? -1) + delta
+        highlighted = next < 0 ? nil : min(next, suggestions.count - 1)
+        return true
+    }
+
+    private func reset() {
+        query = ""
+        suggestions = []
+        highlighted = nil
+    }
+}
+
+/// The search circle and the field it morphs into, widening toward the
+/// bar's center. The hosting view is always the open field's size (with
+/// room for suggestions); it only takes clicks inside the circle while
+/// collapsed.
+struct WikiSearchField: View {
+    let search: WikiSearch
+    @AppStorage(Theme.interfaceFontKey, store: AppState.defaults) private var interfaceFamily = Theme.defaultInterfaceFontFamily
+    @FocusState private var focused: Bool
+
+    static let width: CGFloat = 340
+    static let rowHeight: CGFloat = 32
+    /// The bar row plus six suggestions (Wikipedia's prefix search limit).
+    static let height: CGFloat = PageMetrics.control + 1 + 6 * rowHeight + 16
+    static let morph = Animation.spring(response: 0.34, dampingFraction: 0.84)
+    private static let textSize: CGFloat = 14
+
+    var body: some View {
+        @Bindable var search = search
+        let open = search.expanded
+        let listed = open && !search.suggestions.isEmpty
+        let control = PageMetrics.control
+        let shape = RoundedRectangle(cornerRadius: control / 2, style: .continuous)
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Button { search.expand() } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(WikiTheme.foreground)
+                            .frame(width: control, height: control)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .allowsHitTesting(!open)
+                    .help(open ? "" : "Search Wikipedia (⌘L)")
+                    .accessibilityLabel("Search Wikipedia")
+                    TextField("Search Wikipedia", text: $search.query)
+                        .textFieldStyle(.plain)
+                        .font(WikiTheme.interface(interfaceFamily, size: Self.textSize))
+                        .foregroundStyle(WikiTheme.foreground)
+                        .focused($focused)
+                        .autocorrectionDisabled()
+                        // onSubmit carries no event, so ⌘Return is read here;
+                        // plain Return still goes through the field (and any
+                        // input method's marked text) to onSubmit.
+                        .onKeyPress(keys: [.return]) { press in
+                            guard press.modifiers.contains(.command) else { return .ignored }
+                            search.submit(modifiers: press.modifiers.contains(.shift) ? [.command, .shift] : .command)
+                            return .handled
+                        }
+                        .onSubmit { search.submit(modifiers: NSEvent.modifierFlags) }
+                        .onKeyPress(.downArrow) { search.moveHighlight(1) ? .handled : .ignored }
+                        .onKeyPress(.upArrow) { search.moveHighlight(-1) ? .handled : .ignored }
+                        .onKeyPress(.escape) {
+                            search.expanded = false
+                            return .handled
+                        }
+                        .padding(.trailing, 14)
+                        .opacity(open ? 1 : 0)
+                        .allowsHitTesting(open)
+                }
+                .frame(height: control)
+                if listed {
+                    Rectangle()
+                        .fill(WikiTheme.hairline)
+                        .frame(height: 1)
+                        .padding(.horizontal, 14)
+                    suggestionRows
+                }
+            }
+            .frame(width: open ? proxy.size.width : control, alignment: .leading)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(WikiTheme.hairline, lineWidth: 1).opacity(listed ? 1 : 0))
+            // Like the home search: the open list crossfades from SwiftUI
+            // glass to AppKit glass, which blurs the page beneath.
+            .background {
+                ZStack {
+                    Color.clear
+                        .glassEffect(.regular.interactive(), in: shape)
+                        .opacity(listed ? 0 : 1)
+                    PanelGlass(tint: ChatDock.panelTint, cornerRadius: control / 2)
+                        .opacity(listed ? 1 : 0)
+                }
+                .shadow(color: .black.opacity(listed ? 0.25 : 0), radius: 16, y: 6)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topTrailing)
+        }
+        .animation(Self.morph, value: open)
+        .animation(.snappy(duration: 0.2), value: listed)
+        .task(id: search.query) { await loadSuggestions() }
+        .onChange(of: search.focusRequest) {
+            // Once the field is in place under the circle.
+            Task { focused = true }
+        }
+        .onChange(of: focused) { _, isFocused in
+            guard !isFocused else { return }
+            // Focus went elsewhere (another field, the assistant): fold away,
+            // once any click on a suggestion has landed.
+            Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                if !focused { search.expanded = false }
+            }
+        }
+        .tint(WikiTheme.foreground)
+        .preferredColorScheme(WikiTheme.colorScheme)
+    }
+
+    private var suggestionRows: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(search.suggestions.enumerated()), id: \.element) { index, title in
+                Button { search.submit(title, modifiers: NSEvent.modifierFlags) } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(WikiTheme.secondary)
+                        Text(title)
+                            .font(WikiTheme.interface(interfaceFamily, size: Self.textSize))
+                            .foregroundStyle(WikiTheme.foreground)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .frame(height: Self.rowHeight)
+                    .background(index == search.highlighted ? WikiTheme.wash.opacity(0.08) : .clear)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { if $0 { search.highlighted = index } }
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.bottom, 4)
+    }
+
+    /// Titles starting with the query, once typing pauses.
+    private func loadSuggestions() async {
+        let term = search.query.trimmingCharacters(in: .whitespaces)
+        guard search.expanded, !term.isEmpty else {
+            search.suggestions = []
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        guard !Task.isCancelled else { return }
+        let titles = (try? await WikipediaClient.suggestions(for: term)) ?? []
+        guard !Task.isCancelled, search.expanded else { return }
+        search.suggestions = titles
+        search.highlighted = nil
     }
 }

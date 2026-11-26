@@ -25,11 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Scripting: `--assistant-model codex:<model>` (or claude-code:opus, claude-api, apple).
         if let index = CommandLine.arguments.firstIndex(of: "--assistant-model"), CommandLine.arguments.indices.contains(index + 1),
            let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
-            AgentBackend.preferred = backend
+            // Through the store: files passed at launch open (creating the
+            // store) before this runs, so setting the preference alone is too late.
+            AgentStore.shared.choose(backend)
         }
-        // Scripting: `--theme plasma|dark|light|paper`.
+        // Scripting: `--theme plasma|dark|dark-glass|light|light-glass|paper`.
         if let index = CommandLine.arguments.firstIndex(of: "--theme"), CommandLine.arguments.indices.contains(index + 1),
-           let kind = ThemeKind(rawValue: CommandLine.arguments[index + 1].lowercased()) {
+           let kind = ThemeKind(argument: CommandLine.arguments[index + 1]) {
             ThemeKind.current = kind
         }
         buildMainMenu()
@@ -53,7 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if controllers.isEmpty { makeWindow() }
         }
 
-        NSApp.activate(ignoringOtherApps: true)
+        // Test runs open behind whatever the user is working in, never taking focus.
+        if !AppState.isTesting { NSApp.activate(ignoringOtherApps: true) }
 
         // Debug: select line N fully and bold it, to reproduce artifacts.
         if let flagIndex = args.firstIndex(of: "--boldline"), args.indices.contains(flagIndex + 1),
@@ -75,10 +78,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return args[index + 1]
         }
         if let title = value(after: "--wiki") { keyController?.openArticle(title) }
+        // `--view-lead` opens the article's lead image in the viewer once it
+        // loads (`--view-caption "Text"` replaces its caption); `--view-zoom N`
+        // opens viewers zoomed to N.
+        if let zoom = value(after: "--view-zoom").flatMap(Double.init) { ImageViewer.scriptedZoom = CGFloat(zoom) }
+        if args.contains("--view-lead") { viewLeadImage(caption: value(after: "--view-caption"), attempts: 40) }
+        // `--wiki-search "Query"` opens the article bar's search field with
+        // the query typed (and its suggestions) once the article loads.
+        if let query = value(after: "--wiki-search") { openWikiSearch(query, attempts: 40) }
+        // `--browse /folder` opens the icon browser there.
+        if let path = value(after: "--browse") { keyController?.browse(URL(fileURLWithPath: path)) }
         // `--move-tab` runs Move Tab to New Window on the current tab.
         if args.contains("--move-tab"), let source = keyController { moveTab(from: source, at: source.current) }
         // Showcase staging: `--frame x,y,w,h` in points from the primary
-        // screen's top-left, `--media` for the open folder's media view,
+        // screen's top-left, `--media` for the open folder's icon browser,
         // `--transcript file.json` for a canned conversation (test mode only),
         // and `--assistant-docked` for the docked rather than floating panel.
         if let parts = value(after: "--frame")?.split(separator: ",").compactMap({ Double($0) }), parts.count == 4,
@@ -86,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.setFrame(NSRect(x: parts[0], y: screen.frame.maxY - parts[1] - parts[3], width: parts[2], height: parts[3]), display: true)
         }
         if args.contains("--media"), let controller = keyController, let root = controller.workspace?.root {
-            controller.restoreWorkspace(root: root, collapsed: false, width: controller.sidebarWidth, media: true)
+            controller.browse(root)
         }
         if let path = value(after: "--transcript") { AgentStore.shared.current.loadTranscript(URL(fileURLWithPath: path)) }
         if args.contains("--assistant") || args.contains("--assistant-docked") || value(after: "--ask") != nil || value(after: "--transcript") != nil {
@@ -94,6 +107,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let offset = value(after: "--scroll").flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.scrollPage(to: CGFloat(offset)) }
+        }
+        // `--caret N` puts the note's caret at character N (live preview
+        // reveals the syntax there, e.g. inside an embedded quote).
+        if let caret = value(after: "--caret").flatMap(Int.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
+                guard let textView = keyController?.textView else { return }
+                textView.setSelectedRange(NSRange(location: min(max(0, caret), (textView.string as NSString).length), length: 0))
+            }
         }
         if let question = value(after: "--ask") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in keyController?.agent.send(question) }
@@ -116,6 +137,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         .write(to: URL(fileURLWithPath: outPath))
                 }
                 keyController?.dumpLineFragments(to: outPath + ".layout.txt")
+                // `--snapshot-frames N` keeps capturing (`--snapshot-interval`
+                // seconds apart, 0.1 by default) as path-f1.png, …, to catch animations.
+                if let frames = value(after: "--snapshot-frames").flatMap(Int.init), frames > 0 {
+                    let interval = Double(value(after: "--snapshot-interval") ?? "") ?? 0.1
+                    for frame in 1...frames {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(frame)) {
+                            guard let image = Self.windowImage(window) else { return }
+                            let path = (outPath as NSString).deletingPathExtension + "-f\(frame).png"
+                            try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: path))
+                        }
+                    }
+                }
                 // Other editor windows (e.g. after --move-tab) beside it: name-2.png, …
                 let others = controllers.compactMap(\.window).filter { $0 !== window && !args.contains("--settings") }
                 for (offset, other) in others.enumerated() {
@@ -126,6 +160,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    /// Scripting: retries every quarter second until the article has loaded.
+    private func viewLeadImage(caption: String?, attempts: Int) {
+        guard attempts > 0 else { return }
+        if let page = keyController?.currentDocument.wiki, let article = page.article {
+            if let image = article.leadImage {
+                page.viewer = ViewerItem(image: image, caption: caption.map { AttributedString($0) } ?? article.leadCaption)
+            }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in viewLeadImage(caption: caption, attempts: attempts - 1) }
+    }
+
+    /// Scripting: retries every quarter second until the article has loaded.
+    private func openWikiSearch(_ query: String, attempts: Int) {
+        guard attempts > 0 else { return }
+        if let controller = keyController, controller.currentDocument.wiki?.article != nil {
+            controller.expandWikiSearch()
+            controller.wikiSearch.query = query
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in openWikiSearch(query, attempts: attempts - 1) }
     }
 
     private typealias CreateWindowImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
@@ -140,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--assistant-model", "--theme", "--frame", "--transcript"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search", "--snapshot-frames", "--snapshot-interval", "--frame", "--transcript"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).
@@ -236,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let workspace = source.workspace, let path = doc.url?.standardizedFileURL.pathComponents,
            path.starts(with: workspace.root.standardizedFileURL.pathComponents) {
             controller.restoreWorkspace(root: workspace.root, collapsed: source.sidebarCollapsed,
-                                        width: source.sidebarWidth, media: source.mediaMode)
+                                        width: source.sidebarWidth)
         }
         if let cursor, let window = controller.window {
             window.contentView?.layoutSubtreeIfNeeded()
@@ -317,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var list = recentFiles.filter { $0 != url.path }
         list.insert(url.path, at: 0)
         recentFiles = list
+        RecentTimes.touch("file:" + url.path)
     }
 
     func recentFileRenamed(from oldURL: URL, to newURL: URL) {
@@ -384,7 +442,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 "workspace": controller.workspace?.root.path ?? "",
                 "sidebarCollapsed": controller.sidebarCollapsed,
                 "sidebarWidth": Double(controller.sidebarWidth),
-                "mediaMode": controller.mediaMode,
             ]
         }
         AppState.defaults.set(entries, forKey: "sessionWindows")
@@ -409,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let root = (entry["workspace"] as? String).flatMap { $0.isEmpty || !FileManager.default.fileExists(atPath: $0) ? nil : $0 }
             controller.restoreWorkspace(root: root.map { URL(fileURLWithPath: $0) },
                                         collapsed: entry["sidebarCollapsed"] as? Bool ?? (root == nil),
-                                        width: CGFloat(entry["sidebarWidth"] as? Double ?? 220), media: entry["mediaMode"] as? Bool ?? false)
+                                        width: CGFloat(entry["sidebarWidth"] as? Double ?? 220))
             if let currentTab = entry["currentTab"] as? [String: String], let title = currentTab["wiki"],
                let index = controller.documents.firstIndex(where: { doc in
                    guard let page = doc.wiki else { return false }

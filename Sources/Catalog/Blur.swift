@@ -63,4 +63,42 @@ func applyThemeBackdrop(to window: NSWindow) {
         palette.background.withAlphaComponent(palette.backgroundOpacity).cgColor
     CGSSetWindowBackgroundBlurRadius(
         CGSDefaultConnectionForThread(), UInt32(window.windowNumber), UInt32(palette.blurRadius))
+    if palette.blurRadius > 0, window.isVisible { CornerReclip.run(on: window) }
+}
+
+/// The window server clips a background blur to the window's rounded corners
+/// only when a corner shape arrives after the blur. A window already on screen
+/// (an opaque theme switching to a translucent one) otherwise blurs its whole
+/// rectangle: a square edge beyond the corners. Re-send the shape by pinning
+/// AppKit's corner radius at its current value for a few frames, so the server
+/// renders a distinct shape, then handing the radius back to AppKit.
+private final class CornerReclip: NSObject {
+    private static let get = Selector(("_cornerRadius"))
+    private static let set = Selector(("_setCornerRadius:"))
+    private typealias Getter = @convention(c) (NSWindow, Selector) -> CGFloat
+    private typealias Setter = @convention(c) (NSWindow, Selector, CGFloat) -> Void
+
+    private weak var window: NSWindow?
+    private var frames = 8  // Two can be too few for the server to render the pin.
+
+    static func run(on window: NSWindow) {
+        guard window.responds(to: get), window.responds(to: set) else { return }
+        let radius = unsafeBitCast(window.method(for: get), to: Getter.self)(window, get)
+        pin(window, radius)
+        let reclip = CornerReclip()
+        reclip.window = window
+        window.displayLink(target: reclip, selector: #selector(tick)).add(to: .main, forMode: .common)
+    }
+
+    /// A positive radius overrides AppKit's; zero restores its own.
+    private static func pin(_ window: NSWindow, _ radius: CGFloat) {
+        unsafeBitCast(window.method(for: set), to: Setter.self)(window, set, radius)
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        frames -= 1
+        guard frames <= 0 else { return }
+        link.invalidate()
+        if let window { Self.pin(window, 0) }
+    }
 }

@@ -17,6 +17,16 @@ final class EditorTextView: NSTextView {
     var onOpenWikiLink: ((String) -> Void)?
     /// Lets the highlighter draw wiki links that name nothing as broken.
     var wikiLinkResolver: ((String) -> URL?)?
+    /// Follows an embedded quote's source: its attribution destination and
+    /// the passage's first line, to find it there.
+    var onOpenQuote: ((_ destination: String, _ excerpt: String?) -> Void)?
+    /// The note's file: embedded quotes copied from it link here, and quotes
+    /// pasted into it link relative to it.
+    var documentURLProvider: (() -> URL?)?
+    /// Asks to save an untitled note so a quote copied from it has a file
+    /// to link to.
+    var onRequestSave: (() -> Void)?
+    var onEmbeddedQuoteCopied: (() -> Void)?
     private var referenceRange: NSRange?
     /// The literal that opened the picker: "@" or "[[".
     private var referenceTrigger = "@"
@@ -68,9 +78,22 @@ final class EditorTextView: NSTextView {
         updateReferences()
     }
 
+    /// The embedded quote card under a point in view coordinates.
+    private func quoteCard(at viewPoint: NSPoint) -> QuoteCard? {
+        guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else { return nil }
+        var point = viewPoint
+        point.x -= textContainerOrigin.x; point.y -= textContainerOrigin.y
+        let glyph = layoutManager.glyphIndex(for: point, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).contains(point) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        guard index < textStorage.length else { return nil }
+        return textStorage.attribute(.mdQuoteCard, at: index, effectiveRange: nil) as? QuoteCard
+    }
+
     /// The link under a point in view coordinates, if the point actually
     /// lands on its glyphs.
-    private func link(at viewPoint: NSPoint) -> (destination: String, wiki: Bool)? {
+    private func link(at viewPoint: NSPoint) -> (destination: String, wiki: Bool, card: QuoteCard?)? {
         guard let layoutManager, let textContainer, let textStorage else { return nil }
         var point = viewPoint
         point.x -= textContainerOrigin.x; point.y -= textContainerOrigin.y
@@ -78,16 +101,21 @@ final class EditorTextView: NSTextView {
         let glyph = layoutManager.glyphIndex(for: point, in: textContainer, fractionOfDistanceThroughGlyph: &fraction)
         guard glyph < layoutManager.numberOfGlyphs else { return nil }
         let index = layoutManager.characterIndexForGlyph(at: glyph)
+        // The nearest glyph is reported even for clicks in the blank run past
+        // a line's end, so require the point to land on the glyph itself —
+        // its full width (proportional fonts have slim letters) and the
+        // line's height.
         let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
-        // The inset rejects clicks in the blank run past a line's end. Scale
-        // it to the glyph so narrow letters stay clickable.
-        let hit = rect.insetBy(dx: min(3, rect.width / 3), dy: min(2, rect.height / 3))
-        guard hit.contains(point), index < textStorage.length else { return nil }
+        let line = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        guard point.x >= rect.minX, point.x <= rect.maxX, point.y >= line.minY, point.y <= line.maxY,
+              index < textStorage.length else { return nil }
         if let destination = textStorage.attribute(.fileReference, at: index, effectiveRange: nil) as? String {
-            return (destination, false)
+            let card = textStorage.attribute(.mdQuoteSource, at: index, effectiveRange: nil) != nil
+                ? textStorage.attribute(.mdQuoteCard, at: index, effectiveRange: nil) as? QuoteCard : nil
+            return (destination, false, card)
         }
         if let target = textStorage.attribute(.wikiReference, at: index, effectiveRange: nil) as? String {
-            return (target, true)
+            return (target, true, nil)
         }
         return nil
     }
@@ -95,10 +123,23 @@ final class EditorTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         clearPendingInlineStyle()
         dismissReferences()
+        let point = convert(event.locationInWindow, from: nil)
         // Option-click places the caret inside a link instead of following it.
-        if !event.modifierFlags.contains(.option),
-           let link = link(at: convert(event.locationInWindow, from: nil)) {
-            if link.wiki { onOpenWikiLink?(link.destination) } else { onOpenReference?(link.destination) }
+        if !event.modifierFlags.contains(.option), let link = link(at: point) {
+            if let card = link.card {
+                onOpenQuote?(card.destination, card.excerpt)
+            } else if link.wiki {
+                onOpenWikiLink?(link.destination)
+            } else {
+                onOpenReference?(link.destination)
+            }
+            return
+        }
+        // Command-click anywhere on an embedded quote opens its source; a
+        // plain click edits the quoted text like any other.
+        if event.modifierFlags.contains(.command), !event.modifierFlags.contains(.option),
+           let card = quoteCard(at: point) {
+            onOpenQuote?(card.destination, card.excerpt)
             return
         }
         super.mouseDown(with: event)
@@ -216,6 +257,8 @@ final class EditorTextView: NSTextView {
         pendingEdit = nil
         highlighter.baseDirectory = baseDirectoryProvider?() ?? nil
         highlighter.resolveWikiLink = wikiLinkResolver
+        highlighter.revealLocation = selectedRange().location
+        revealedQuote = revealRange(at: selectedRange().location)
         if let textStorage { highlighter.highlight(textStorage) }
         typingAttributes = Theme.baseAttributes
         window?.invalidateCursorRects(for: self)
@@ -227,9 +270,36 @@ final class EditorTextView: NSTextView {
             pendingEdit = nil
             highlighter.baseDirectory = baseDirectoryProvider?() ?? nil
             highlighter.resolveWikiLink = wikiLinkResolver
+            highlighter.revealLocation = selectedRange().location
             highlighter.highlight(textStorage, edited: edited)
+            // Typing can reveal syntax (a table's delimiter row as it's
+            // written); track it so the caret leaving conceals it again.
+            let revealed = revealRange(at: selectedRange().location)
+            if let previous = revealedQuote, previous != revealed, NSMaxRange(previous) <= textStorage.length {
+                highlighter.highlight(textStorage, lines: previous)
+            }
+            revealedQuote = revealed
         }
         typingAttributes = Theme.baseAttributes
+        window?.invalidateCursorRects(for: self)
+    }
+
+    /// The embedded quote showing its syntax because the caret is in it.
+    private var revealedQuote: NSRange?
+
+    /// Live preview for embedded quotes: entering one reveals its markers
+    /// (dimmed) so the attribution can be edited; leaving conceals them.
+    private func updateQuoteReveal() {
+        guard let textStorage, pendingEdit == nil else { return }
+        let caret = selectedRange().location
+        let block = revealRange(at: caret)
+        guard block != revealedQuote else { return }
+        let previous = revealedQuote
+        revealedQuote = block
+        highlighter.revealLocation = caret
+        for range in [previous, block].compactMap({ $0 }) {
+            highlighter.highlight(textStorage, lines: range)
+        }
         window?.invalidateCursorRects(for: self)
     }
 
@@ -251,9 +321,12 @@ final class EditorTextView: NSTextView {
     }
 
     private var navigating = false
+    /// The caret before the latest selection change, for table navigation.
+    private var tableCaretAnchor = 0
 
     override func moveLeft(_ sender: Any?) {
         clearPendingInlineStyle()
+        if moveCaretAcrossTableCells(forward: false) { return }
         navigating = true
         defer { navigating = false }
         let initial = selectedRange()
@@ -274,6 +347,7 @@ final class EditorTextView: NSTextView {
 
     override func moveRight(_ sender: Any?) {
         clearPendingInlineStyle()
+        if moveCaretAcrossTableCells(forward: true) { return }
         navigating = true
         defer { navigating = false }
         let initial = selectedRange()
@@ -313,7 +387,10 @@ final class EditorTextView: NSTextView {
     /// run; snap it to the nearer edge.
     @objc private func selectionChanged() {
         repaintSelectionNeighborhood()
+        updateQuoteReveal()
+        defer { tableCaretAnchor = selectedRange().location }
         guard !navigating else { return }
+        if pendingEdit == nil, keepCaretInTableCell(previous: tableCaretAnchor) { return }
         let sel = selectedRange()
         if sel.length > 0 { clearPendingInlineStyle() }
         guard sel.length == 0, sel.location > 0 else { return }
@@ -327,6 +404,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func deleteBackward(_ sender: Any?) {
+        if tableBlocksDeletion(backward: true) { return }
         let sel = selectedRange()
         let ns = string as NSString
         if sel.length > 0 {
@@ -365,6 +443,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func deleteForward(_ sender: Any?) {
+        if tableBlocksDeletion(backward: false) { return }
         let sel = selectedRange()
         let ns = string as NSString
         if sel.length > 0 {
@@ -404,7 +483,7 @@ final class EditorTextView: NSTextView {
         highlightEdits()
         let ns = string as NSString
         var copied = ""
-        for range in visibleSourceRanges(in: sel) {
+        for range in visibleSourceRanges(in: sel, keepingTableSyntax: true) {
             copied += ns.substring(with: range)
         }
         let pasteboard = NSPasteboard.general
@@ -484,7 +563,9 @@ final class EditorTextView: NSTextView {
     /// Source ranges for only the rendered characters in a visual selection.
     /// Markdown/HTML syntax is deliberately omitted even when TextKit's raw
     /// selection happens to include it.
-    private func visibleSourceRanges(in selection: NSRange) -> [NSRange] {
+    /// Copying keeps a table's pipes (`keepingTableSyntax`), so rows paste
+    /// as rows.
+    private func visibleSourceRanges(in selection: NSRange, keepingTableSyntax: Bool = false) -> [NSRange] {
         guard let textStorage, selection.length > 0 else { return [] }
         let inlineMarkers = inlineSpans(intersecting: selection).flatMap { span in
             [NSRange(location: span.range.location,
@@ -498,8 +579,9 @@ final class EditorTextView: NSTextView {
             // Derive inline markers structurally as well as consulting the
             // presentation attribute. This keeps editing correct even when
             // adjacent delimiter runs make highlighter precedence subtle.
-            let concealed = inlineMarkers.contains { NSLocationInRange(index, $0) }
-                || textStorage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil
+            let concealed = (inlineMarkers.contains { NSLocationInRange(index, $0) }
+                || textStorage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil)
+                && !(keepingTableSyntax && textStorage.attribute(.mdTableSyntax, at: index, effectiveRange: nil) != nil)
             if concealed {
                 if let start { ranges.append(NSRange(location: start, length: index - start)) }
                 start = nil
@@ -607,6 +689,20 @@ final class EditorTextView: NSTextView {
         guard selection.length > 0 else { return }
         highlightEdits()
         var edits = visibleSourceRanges(in: selection)
+        // Across table cells, only cell text changes (or whole rows go).
+        if let tableEdits = tableAwareEdits(edits, selection: selection) {
+            clearPendingInlineStyle()
+            let merged = mergedRanges(tableEdits)
+            guard let first = merged.first else {
+                setSelectedRange(NSRange(location: selection.location, length: 0))
+                return
+            }
+            for range in merged.reversed() {
+                super.insertText(range == first ? replacement : "", replacementRange: range)
+            }
+            setSelectedRange(NSRange(location: first.location + (replacement as NSString).length, length: 0))
+            return
+        }
         if replaceInsideSingleSpan(edits, selection: selection,
                                    replacement: replacement, deleting: deleting) {
             clearPendingInlineStyle()
@@ -757,6 +853,13 @@ final class EditorTextView: NSTextView {
     // MARK: - Slash commands
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        var string = string
+        // A `|` typed into a table cell is escaped so the row keeps its cells.
+        if replacementRange.location == NSNotFound, !hasMarkedText(),
+           let typed = (string as? String) ?? (string as? NSAttributedString)?.string,
+           let escaped = tableCellText(for: typed, at: selectedRange()) {
+            string = escaped
+        }
         let inserted = (string as? String) ?? (string as? NSAttributedString)?.string
         // Typing at the end of a bold/italic/code/color span continues the
         // style. Whitespace stays outside: a trailing space inside the
@@ -941,6 +1044,7 @@ final class EditorTextView: NSTextView {
 
     override func insertNewline(_ sender: Any?) {
         clearPendingInlineStyle()
+        if insertNewlineInTable() { return }
         moveCaretOutsideInlineBoundaryForBreak()
         let sel = selectedRange()
         let ns = string as NSString
@@ -987,6 +1091,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func insertTab(_ sender: Any?) {
+        if moveToAdjacentTableCell(forward: true) { return }
         guard let lineRange = listLineRange() else {
             super.insertTab(sender)
             return
@@ -995,6 +1100,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func insertBacktab(_ sender: Any?) {
+        if moveToAdjacentTableCell(forward: false) { return }
         guard let lineRange = listLineRange() else {
             super.insertBacktab(sender)
             return
@@ -1541,9 +1647,143 @@ final class EditorTextView: NSTextView {
         insertText(newPrefix, replacementRange: NSRange(location: lineRange.location, length: stripLength))
     }
 
+    // MARK: - Embedded quotes
+
+    /// The selection quoted from this note, attributed to the nearest
+    /// heading above it. An untitled note is offered a save first, since
+    /// the quote has to link to a file.
+    func embeddedQuoteForSelection() -> EmbeddedQuote.Quote? {
+        var selection = selectedRange()
+        guard selection.length > 0 else { return nil }
+        if documentURLProvider?() == nil { onRequestSave?() }
+        guard let file = documentURLProvider?() else { return nil }
+        highlightEdits()
+        // A selection ending partway into concealed syntax takes in the
+        // whole span, so the quoted Markdown stays balanced.
+        for span in inlineSpans(intersecting: selection) where NSIntersectionRange(span.range, selection).length > 0 {
+            selection = NSUnionRange(selection, span.range)
+        }
+        return EmbeddedQuote.noteQuote(text: string as NSString, selection: selection, file: file)
+    }
+
+    @discardableResult
+    func copyEmbeddedQuote(to pasteboard: NSPasteboard) -> Bool {
+        guard let quote = embeddedQuoteForSelection() else { return false }
+        EmbeddedQuote.write(quote, to: pasteboard)
+        return true
+    }
+
+    @objc func copyAsEmbeddedQuote(_ sender: Any?) {
+        guard copyEmbeddedQuote(to: .general) else { NSSound.beep(); return }
+        onEmbeddedQuoteCopied?()
+    }
+
+    /// Pastes a quote copied in Catalog with its file links spelled from
+    /// this note, set apart by blank lines so it stays its own block.
+    @discardableResult
+    func pasteEmbeddedQuote(from pasteboard: NSPasteboard) -> Bool {
+        guard let quote = EmbeddedQuote.read(from: pasteboard) else { return false }
+        let markdown = EmbeddedQuote.markdown(quote, relativeTo: documentURLProvider?())
+        let range = selectedRange()
+        insertText(EmbeddedQuote.padded(markdown, in: string as NSString, replacing: range), replacementRange: range)
+        return true
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copyAsEmbeddedQuote(_:)) {
+            (item as? NSMenuItem)?.title = "Copy as Embedded Quote"
+            return selectedRange().length > 0
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    // MARK: - Context menu
+
+    /// The image embed drawn under a point: the layout manager paints it
+    /// across its (concealed) syntax line, so it isn't selectable text.
+    private func imageEmbed(at viewPoint: NSPoint) -> ImageEmbed? {
+        guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else { return nil }
+        var point = viewPoint
+        point.x -= textContainerOrigin.x; point.y -= textContainerOrigin.y
+        let glyph = layoutManager.glyphIndex(for: point, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).contains(point) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        guard index < textStorage.length else { return nil }
+        return textStorage.attribute(.mdImage, at: index, effectiveRange: nil) as? ImageEmbed
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        if let embed = imageEmbed(at: convert(event.locationInWindow, from: nil)) {
+            return imageMenu(for: embed.url)
+        }
+        guard let menu = super.menu(for: event) else { return nil }
+        if selectedRange().length > 0 {
+            let item = NSMenuItem(title: "Copy as Embedded Quote", action: #selector(copyAsEmbeddedQuote(_:)), keyEquivalent: "")
+            item.target = self
+            let copy = menu.items.firstIndex { $0.action == #selector(copy(_:)) }
+            menu.insertItem(item, at: copy.map { $0 + 1 } ?? 0)
+        }
+        return menu
+    }
+
+    private func imageMenu(for url: URL) -> NSMenu {
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+        }
+        add("Copy Image", #selector(copyEmbeddedImage(_:)))
+        add("Copy as Embedded Quote", #selector(copyEmbeddedImageQuote(_:)))
+        menu.addItem(.separator())
+        if url.isFileURL {
+            add("Open Image", #selector(openEmbeddedImage(_:)))
+            add("Reveal in Finder", #selector(revealEmbeddedImage(_:)))
+        } else {
+            add("Copy Image Address", #selector(copyEmbeddedImageAddress(_:)))
+            add("Open Image in Browser", #selector(openEmbeddedImage(_:)))
+        }
+        return menu
+    }
+
+    @objc private func copyEmbeddedImage(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        if url.isFileURL {
+            if !ImageClipboard.copy(file: url) { NSSound.beep() }
+        } else {
+            ImageClipboard.copy(remote: url)
+        }
+    }
+
+    @objc private func copyEmbeddedImageQuote(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        var quote = EmbeddedQuote.mediaQuote(file: url)
+        if !url.isFileURL { quote.target = url.absoluteString }
+        EmbeddedQuote.write(quote, to: .general)
+        onEmbeddedQuoteCopied?()
+    }
+
+    @objc private func copyEmbeddedImageAddress(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        ImageClipboard.copyAddress(url)
+    }
+
+    @objc private func openEmbeddedImage(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        if url.isFileURL { onOpenReference?(FileReference.encode(url.path)) } else { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func revealEmbeddedImage(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     // MARK: - Paste as plain text
 
     override func paste(_ sender: Any?) {
+        if pasteEmbeddedQuote(from: .general) { return }
+        if pasteIntoTableCell() { return }
         pasteAsPlainText(sender)
     }
 }

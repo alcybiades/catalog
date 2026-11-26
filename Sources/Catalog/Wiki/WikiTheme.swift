@@ -37,6 +37,8 @@ enum WikiTheme {
     static var codeBlockBackground: Color { Color(nsColor: palette.codeBlockBackground) }
     static var bubble: Color { Color(nsColor: palette.bubble) }
     static var bubbleText: Color { Color(nsColor: palette.bubbleText) }
+    static var send: Color { Color(nsColor: palette.send) }
+    static var sendGlyph: Color { Color(nsColor: palette.sendGlyph) }
     static var danger: Color { Color(nsColor: palette.danger) }
     static var diagramBase: Color { Color(nsColor: palette.diagramBase) }
 
@@ -90,9 +92,10 @@ enum WikiTheme {
         bodyFamilies.contains(Theme.fontFamily) ? Theme.fontFamily : "Baskerville"
     }
 
-    static var interfaceFamily: String {
-        let family = Theme.interfaceFontFamily
-        return familyExists(family) ? family : "Verdana"
+    static var interfaceFamily: String { interfaceFamily(Theme.interfaceFontFamily) }
+
+    static func interfaceFamily(_ family: String) -> String {
+        familyExists(family) ? family : "Helvetica"
     }
 
     static func familyExists(_ family: String) -> Bool {
@@ -105,6 +108,10 @@ enum WikiTheme {
 
     static func interface(size: Double, weight: Font.Weight = .regular) -> Font {
         .custom(interfaceFamily, fixedSize: size).weight(weight)
+    }
+
+    static func interface(_ family: String, size: Double, weight: Font.Weight = .regular) -> Font {
+        .custom(interfaceFamily(family), fixedSize: size).weight(weight)
     }
 
     static func adjustFontSize(by delta: Double) {

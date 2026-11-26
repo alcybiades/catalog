@@ -10,6 +10,8 @@ enum AgentStreamEvent {
     case toolStarted(key: String, label: String)
     case toolUpdated(key: String, label: String, url: URL?)
     case toolFinished(key: String, failed: Bool, changedFiles: Bool)
+    /// A tool is about to write this file: unsaved edits to it go first.
+    case willModify(URL)
     case failure(String)
 }
 
@@ -23,6 +25,7 @@ enum AgentCLIPrompt {
     their tabs. New notes are Markdown (.md) files with short descriptive names. Don't delete files unless asked.
     - Keep chat replies brief, in light Markdown: **bold**, *italics*, `code`, and "- " bullets. No headings or tables.
     - Link Wikipedia articles as [Name](encyclopedia://wiki/Exact_Article_Title) (underscores for spaces) so they open in Catalog.
+    - \(EmbeddedQuote.agentGuide)
     """
 }
 
@@ -92,6 +95,10 @@ enum ClaudeCodeRunner {
                             let input = block["input"] as? [String: Any] ?? [:]
                             if tools[id] == nil { await onEvent(.toolStarted(key: id, label: ClaudeCodeTools.label(name, input, directory: directory))) }
                             tools[id] = (name, input)
+                            // The input is complete before the tool runs.
+                            if ["Write", "Edit", "MultiEdit"].contains(name), let file = ClaudeCodeTools.file(name, input, directory: directory) {
+                                await onEvent(.willModify(file))
+                            }
                             await onEvent(.toolUpdated(key: id, label: ClaudeCodeTools.label(name, input, directory: directory),
                                                        url: ClaudeCodeTools.file(name, input, directory: directory)))
                         case "text":

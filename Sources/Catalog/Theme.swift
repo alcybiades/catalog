@@ -26,19 +26,53 @@ extension NSColor {
     }
 }
 
-/// The app's color themes. Plasma, the original, tints a background blur;
-/// the others are opaque.
-enum ThemeKind: String, CaseIterable {
-    case plasma, dark, light, paper
+/// Token colors inside fenced code; untokenized code keeps `Palette.code`.
+struct SyntaxColors {
+    var keyword, string, comment, number, type, function: NSColor
 
-    var title: String { rawValue.capitalized }
+    init(keyword: UInt32, string: UInt32, comment: UInt32, number: UInt32, type: UInt32, function: UInt32) {
+        (self.keyword, self.string, self.comment) = (NSColor(hex: keyword), NSColor(hex: string), NSColor(hex: comment))
+        (self.number, self.type, self.function) = (NSColor(hex: number), NSColor(hex: type), NSColor(hex: function))
+    }
+
+    subscript(token: CodeToken) -> NSColor {
+        switch token {
+        case .keyword: return keyword
+        case .string: return string
+        case .comment: return comment
+        case .number: return number
+        case .type: return type
+        case .function: return function
+        }
+    }
+}
+
+/// The app's color themes. Plasma, the original, and the Glass themes tint
+/// a background blur; the others are opaque.
+enum ThemeKind: String, CaseIterable {
+    case plasma, dark, darkGlass, light, lightGlass, paper
+
+    var title: String {
+        switch self {
+        case .darkGlass: return "Dark Glass"
+        case .lightGlass: return "Light Glass"
+        default: return rawValue.capitalized
+        }
+    }
+
+    /// Parses a `--theme` value, ignoring case and separators ("dark-glass").
+    init?(argument: String) {
+        let name = argument.lowercased().filter(\.isLetter)
+        guard let kind = Self.allCases.first(where: { $0.rawValue.lowercased() == name }) else { return nil }
+        self = kind
+    }
 
     /// The defaults key for this theme's override of a semantic color.
     /// Plasma keeps the original unprefixed keys.
     func key(_ name: String) -> String { self == .plasma ? name : "\(rawValue).\(name)" }
 
     static var current: ThemeKind {
-        get { AppState.defaults.string(forKey: "theme").flatMap(ThemeKind.init) ?? .plasma }
+        get { AppState.defaults.string(forKey: "theme").flatMap(ThemeKind.init(rawValue:)) ?? .plasma }
         set {
             AppState.defaults.set(newValue.rawValue, forKey: "theme")
             ThemeStore.shared.reload()
@@ -70,9 +104,13 @@ struct Palette {
     var sidebarSelection: NSColor
     var codeBackground: NSColor
     var codeBlockBackground: NSColor
+    var syntax: SyntaxColors
     /// The user's turns in the assistant transcript.
     var bubble: NSColor
     var bubbleText: NSColor
+    /// The assistant's send button and the arrow on it.
+    var send: NSColor
+    var sendGlyph: NSColor
     var danger: NSColor
     /// Timeline bars mix their Wikipedia color into this.
     var diagramBase: NSColor
@@ -91,7 +129,9 @@ struct Palette {
         switch kind {
         case .plasma: return plasma
         case .dark: return dark
+        case .darkGlass: return darkGlass
         case .light: return light
+        case .lightGlass: return lightGlass
         case .paper: return paper
         }
     }
@@ -108,7 +148,10 @@ struct Palette {
         sidebarSelection: NSColor(hex: 0x7186A5, alpha: 0.28),
         codeBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
         codeBlockBackground: NSColor(hex: 0x2E2E2E, alpha: 0.5),
+        syntax: .init(keyword: 0xC39BFF, string: 0xFFB86C, comment: 0x6A7A96,
+                      number: 0xFF8A7A, type: 0x63D0FF, function: 0xA4BEEF),
         bubble: NSColor.black.withAlphaComponent(0.25), bubbleText: NSColor.white.withAlphaComponent(0.92),
+        send: .white, sendGlyph: NSColor(hex: 0x141414),
         danger: NSColor(hex: 0xFF8A7A), diagramBase: NSColor(hex: 0x1C1D22),
         bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xA4BEEF), italic: NSColor(hex: 0xD7E0FF),
         inlineCode: NSColor(hex: 0xFFB86C), listMarker: NSColor(hex: 0xFFD166),
@@ -126,11 +169,23 @@ struct Palette {
         sidebarSelection: NSColor.white.withAlphaComponent(0.09),
         codeBackground: NSColor.white.withAlphaComponent(0.09),
         codeBlockBackground: NSColor(hex: 0x171717),
+        syntax: .init(keyword: 0x8FB3E8, string: 0xD9A77F, comment: 0x7A7A7A,
+                      number: 0xC4A5DE, type: 0x86C8B8, function: 0xE3D7A3),
         bubble: NSColor.white.withAlphaComponent(0.08), bubbleText: NSColor(hex: 0xECECEC),
+        send: NSColor(hex: 0x3D7FE0), sendGlyph: .white,
         danger: NSColor(hex: 0xF28B82), diagramBase: NSColor(hex: 0x262626),
         bold: NSColor(hex: 0xFFFFFF), heading: NSColor(hex: 0xF4F4F4), italic: NSColor(hex: 0xD0D0D0),
         inlineCode: NSColor(hex: 0xE6B98C), listMarker: NSColor(hex: 0x9B9B9B),
         quote: NSColor(hex: 0xB4B4B4), link: NSColor(hex: 0x7CB2F2))
+
+    /// Dark's colors over Plasma's translucent blur.
+    static let darkGlass: Palette = {
+        var palette = dark
+        palette.backgroundOpacity = plasma.backgroundOpacity
+        palette.blurRadius = plasma.blurRadius
+        palette.codeBlockBackground = NSColor.black.withAlphaComponent(0.2)
+        return palette
+    }()
 
     /// White surfaces, near-black text, gray secondary text.
     static let light = Palette(
@@ -144,27 +199,42 @@ struct Palette {
         sidebarSelection: NSColor.black.withAlphaComponent(0.06),
         codeBackground: NSColor.black.withAlphaComponent(0.06),
         codeBlockBackground: NSColor(hex: 0xF5F5F5),
+        syntax: .init(keyword: 0xCF222E, string: 0x0A3069, comment: 0x6E7781,
+                      number: 0x0550AE, type: 0x953800, function: 0x8250DF),
         bubble: NSColor.black.withAlphaComponent(0.05), bubbleText: NSColor(hex: 0x0D0D0D),
+        send: NSColor(hex: 0x1F62D0), sendGlyph: .white,
         danger: NSColor(hex: 0xC5221F), diagramBase: NSColor(hex: 0xFFFFFF),
         bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x0D0D0D), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xB0412E), listMarker: NSColor(hex: 0x8F8F8F),
         quote: NSColor(hex: 0x5D5D5D), link: NSColor(hex: 0x1F62D0))
 
-    /// Cream paper, warm brown-gray ink, and muted earthy accents.
+    /// Light's colors over Plasma's blur, tinted denser to stay legible.
+    static let lightGlass: Palette = {
+        var palette = light
+        palette.backgroundOpacity = 0.72
+        palette.blurRadius = plasma.blurRadius
+        palette.codeBlockBackground = NSColor.black.withAlphaComponent(0.04)
+        return palette
+    }()
+
+    /// Cream paper, near-black ink, and muted earthy accents.
     static let paper = Palette(
         isDark: false,
         background: NSColor(hex: 0xF6EFDF), backgroundOpacity: 1, blurRadius: 0,
-        foreground: NSColor(hex: 0x4D4237), dim: NSColor(hex: 0xB3A48C),
-        secondary: NSColor(hex: 0x5C4B3B, alpha: 0.6), wash: NSColor(hex: 0x5C4B3B),
+        foreground: NSColor(hex: 0x1F1F1F), dim: NSColor(hex: 0xB3A48C),
+        secondary: NSColor.black.withAlphaComponent(0.55), wash: .black,
         sidebarFill: NSColor(hex: 0x8A6A3A, alpha: 0.06),
-        code: NSColor(hex: 0x5F6B2C), cursor: NSColor(hex: 0x4D4237),
-        selection: NSColor(hex: 0xEADBB8), selectedText: NSColor(hex: 0x2F261E),
+        code: NSColor(hex: 0x5F6B2C), cursor: NSColor(hex: 0x1F1F1F),
+        selection: NSColor(hex: 0xEADBB8), selectedText: NSColor(hex: 0x111111),
         sidebarSelection: NSColor(hex: 0x8A6A3A, alpha: 0.14),
         codeBackground: NSColor(hex: 0x8A6A3A, alpha: 0.10),
         codeBlockBackground: NSColor(hex: 0xEFE5D0),
-        bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x3B3128),
+        syntax: .init(keyword: 0x9A3B2E, string: 0x2F6F8F, comment: 0x9C8C70,
+                      number: 0xB07D2B, type: 0x7F6A8A, function: 0x3F4A1C),
+        bubble: NSColor(hex: 0x8A6A3A, alpha: 0.09), bubbleText: NSColor(hex: 0x1A1A1A),
+        send: NSColor(hex: 0x1A1A1A), sendGlyph: NSColor(hex: 0xF6EFDF),
         danger: NSColor(hex: 0xB23A2E), diagramBase: NSColor(hex: 0xF6EFDF),
-        bold: NSColor(hex: 0x2F261E), heading: NSColor(hex: 0x9A5B2A), italic: NSColor(hex: 0x6A5846),
+        bold: NSColor(hex: 0x000000), heading: NSColor(hex: 0x141414), italic: NSColor(hex: 0x3A3A3A),
         inlineCode: NSColor(hex: 0xA8473A), listMarker: NSColor(hex: 0xB07D2B),
         quote: NSColor(hex: 0x7F6A8A), link: NSColor(hex: 0x2F6F8F))
 
@@ -283,6 +353,24 @@ enum Theme {
     static var codeBlockBackground: NSColor { palette.codeBlockBackground }
     static let codeBlockPadding: CGFloat = 12
 
+    /// Embedded quote cards: the code-block wash tinted with the link color,
+    /// so they read as something that leads elsewhere.
+    static var quoteAccent: NSColor { link ?? foreground }
+    static var quoteCardFill: NSColor {
+        (codeBlockBackground.blended(withFraction: 0.08, of: quoteAccent) ?? codeBlockBackground)
+    }
+    static var quoteCardStroke: NSColor { quoteAccent.withAlphaComponent(palette.isDark ? 0.16 : 0.22) }
+    static var quoteCardRule: NSColor { quoteAccent.withAlphaComponent(0.85) }
+    static let quoteCardRadius: CGFloat = 10
+
+    /// Tables: a hairline grid in the text's own ink, a stronger rule under
+    /// the header, and a faint wash behind it.
+    static var tableStroke: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.17 : 0.15) }
+    static var tableRule: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.09 : 0.08) }
+    static var tableHeaderRule: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.26 : 0.22) }
+    static var tableHeaderFill: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.05 : 0.035) }
+    static let tableCornerRadius: CGFloat = 7
+
     static let maxImageWidth: CGFloat = 440
     static let imageCornerRadius: CGFloat = 8
 
@@ -322,19 +410,20 @@ enum Theme {
         }
     }
 
-    static let defaultFontFamily = "Classic Console Neue"
+    static let defaultFontFamily = "Hoefler Text"
+    static let defaultInterfaceFontFamily = "Helvetica"
+    static let interfaceFontKey = "interfaceFontFamily"
 
     static var fontFamily: String {
         get { AppState.defaults.string(forKey: "fontFamily") ?? defaultFontFamily }
         set { AppState.defaults.set(newValue, forKey: "fontFamily") }
     }
 
-    /// Font for app chrome: sidebar, tabs, status, pickers, and other custom
-    /// interface labels. Existing users inherit their body choice until they
-    /// explicitly choose a separate interface family.
+    /// Font for app chrome: sidebar, tabs, status, pickers, the home page's
+    /// actions and search, and other custom interface labels.
     static var interfaceFontFamily: String {
-        get { AppState.defaults.string(forKey: "interfaceFontFamily") ?? fontFamily }
-        set { AppState.defaults.set(newValue, forKey: "interfaceFontFamily") }
+        get { AppState.defaults.string(forKey: interfaceFontKey) ?? defaultInterfaceFontFamily }
+        set { AppState.defaults.set(newValue, forKey: interfaceFontKey) }
     }
 
     private static let fallbackFontNames = ["ClassicConsoleNeue", "JetBrainsMono-Regular", "SFMono-Regular", "Menlo"]

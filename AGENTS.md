@@ -3,9 +3,13 @@
 - Run regression tests with `make test`; the test executables compile with
   `CATALOG_TESTING` and use isolated preferences and recovery drafts.
 - For automated UI checks, launch a separate app instance with `--test-mode`
-  (for example, `open -na /Applications/Catalog.app --args --test-mode`), or set
+  (for example, `open -gna /Applications/Catalog.app --args --test-mode`), or set
   `CATALOG_TEST_MODE=1` when launching the executable. Never create scratch tabs
   or type test content into the user's normal Catalog session.
+- Test-mode instances run in the background (no Dock icon or menu bar) and never
+  take focus, so the user can keep typing elsewhere. Always pass `-g` to `open`;
+  never activate a test instance or send it keystrokes. Liquid Glass draws in its
+  inactive style in these windows; that is expected.
 - Use temporary fixture files for edits. Test mode isolates app state, but
   explicitly opened files still save to their supplied paths.
 - A preview intended for the user to use with their own documents may launch
@@ -14,16 +18,27 @@
   opens an article, `--assistant` shows the assistant, `--ask "Question"`
   sends it one, `--assistant-model codex:<model>` (or `claude-code:opus`,
   `claude-api`, `apple`) picks its model, `--theme dark` (or `plasma`,
-  `light`, `paper`) picks the theme, `--scroll N` scrolls the note (or to Wikipedia block N), `--move-tab` moves
+  `dark-glass`, `light`, `light-glass`, `paper`) picks the theme, `--browse
+  /folder` opens the icon browser there (with a workspace folder also passed,
+  Back leads up to it), `--scroll N` scrolls the note (or to Wikipedia block N), `--caret N`
+  puts the note's caret at character N (an embedded quote there shows its syntax),
+  `--view-lead` opens the article's lead image in the image viewer once it loads
+  (`--view-caption "Text"` replaces its caption, `--view-zoom N` opens it zoomed
+  to N), `--wiki-search "Query"` opens the article's bar search with the
+  query typed (and its suggestions) once the article loads, `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
-  composite, glass included. `--theme plasma|dark|light|paper` picks the
-  theme; `--frame x,y,w,h` sets the window frame in points from the primary
-  screen's top-left; a folder path argument opens it as the workspace (add a
-  note's path to show it too) and `--media` switches it to the media view;
-  `--assistant` shows the floating panel and `--assistant-docked` the docked
-  one; `--transcript file.json` (test mode only) preloads a canned
+  composite, glass included; `--snapshot-frames N` (`--snapshot-interval
+  seconds`, default 0.1) keeps capturing as `path-f1.png`, … to catch
+  animations. `--frame x,y,w,h` sets the window frame in points from the
+  primary screen's top-left; a folder path argument opens it as the workspace
+  (add a note's path to show it too) and `--media` opens it in the icon
+  browser; `--assistant` shows the floating panel and `--assistant-docked` the
+  docked one; `--transcript file.json` (test mode only) preloads a canned
   conversation, as in `Support/Showcase/transcript.json`, without calling a
   model. Each test-mode launch gets its own preferences suite, so concurrent
   instances keep their own themes. `Support/Showcase/stage.sh [app] [shots]`
   tiles the four README showcase windows, optionally snapshotting each.
+- Open notes follow their files live: to check how an outside (assistant)
+  edit animates in, launch on a fixture note with `--snapshot-frames`, wait
+  for the first snapshot, then overwrite the fixture file from the shell.
