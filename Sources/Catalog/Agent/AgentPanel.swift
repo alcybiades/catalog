@@ -23,6 +23,9 @@ struct AgentPanel: View {
 
     @AppStorage(WikiTheme.bodyFontKey, store: AppState.defaults) private var bodyFamily = WikiTheme.defaultBodyFamily
     @FocusState private var focused: Bool
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var followsOutput = true
+    @State private var userScrolling = false
 
     private var font: ReaderFont { ReaderFont(family: bodyFamily, size: 17) }
 
@@ -203,6 +206,13 @@ struct AgentPanel: View {
 
     // MARK: Transcript
 
+    /// Changes whenever the transcript gets taller while the agent works.
+    private var transcriptGrowth: [Int] {
+        let last = session.items.last
+        return [session.items.count, last?.text.count ?? 0, last.map { $0.status == .running ? 1 : 0 } ?? 0,
+                session.isResponding ? 1 : 0]
+    }
+
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
@@ -218,8 +228,24 @@ struct AgentPanel: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
+        // Follow streaming output while the reader is at the bottom; scrolling
+        // up to read pauses it, and coming back down (or sending) resumes it.
+        .onScrollPhaseChange { _, phase in userScrolling = phase != .idle && phase != .animating }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentSize.height - geometry.visibleRect.maxY
+        } action: { _, distance in
+            if userScrolling { followsOutput = distance < 40 }
+        }
+        .onChange(of: transcriptGrowth) {
+            guard followsOutput else { return }
+            scrollPosition.scrollTo(edge: .bottom)
+        }
+        .onChange(of: session.items.count) { old, new in
+            if new > old, session.items.last?.kind == .user { followsOutput = true }
+        }
         .scrollEdgeEffectStyle(.soft, for: .all)
         .animation(.snappy, value: session.items.count)
     }
