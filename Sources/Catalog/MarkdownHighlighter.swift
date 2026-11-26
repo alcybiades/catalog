@@ -139,15 +139,6 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
                 let x = (frame.minX + edge).rounded() + 0.5
                 hairline(from: NSPoint(x: x, y: frame.minY), to: NSPoint(x: x, y: frame.maxY), color: Theme.tableRule)
             }
-            // A scroll bar along the bottom says there's more to the side.
-            if tableWidth > viewWidth + 0.5 {
-                let length = max(24, viewWidth * viewWidth / tableWidth)
-                let travel = viewWidth - length
-                let progress = min(max(offset / (tableWidth - viewWidth), 0), 1)
-                let bar = NSRect(x: window.minX + travel * progress, y: window.maxY - 6, width: length, height: 3)
-                Theme.tableStroke.setFill()
-                NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
-            }
             NSGraphicsContext.current?.restoreGraphicsState()
             NSGraphicsContext.current?.saveGraphicsState()
             NSBezierPath(rect: window.insetBy(dx: -1, dy: -1)).addClip()
