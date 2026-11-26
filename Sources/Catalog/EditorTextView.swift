@@ -258,7 +258,7 @@ final class EditorTextView: NSTextView {
         highlighter.baseDirectory = baseDirectoryProvider?() ?? nil
         highlighter.resolveWikiLink = wikiLinkResolver
         highlighter.revealLocation = selectedRange().location
-        revealedQuote = EmbeddedQuote.block(containing: selectedRange().location, in: string as NSString)?.range
+        revealedQuote = revealRange(at: selectedRange().location)
         if let textStorage { highlighter.highlight(textStorage) }
         typingAttributes = Theme.baseAttributes
         window?.invalidateCursorRects(for: self)
@@ -272,6 +272,13 @@ final class EditorTextView: NSTextView {
             highlighter.resolveWikiLink = wikiLinkResolver
             highlighter.revealLocation = selectedRange().location
             highlighter.highlight(textStorage, edited: edited)
+            // Typing can reveal syntax (a table's delimiter row as it's
+            // written); track it so the caret leaving conceals it again.
+            let revealed = revealRange(at: selectedRange().location)
+            if let previous = revealedQuote, previous != revealed, NSMaxRange(previous) <= textStorage.length {
+                highlighter.highlight(textStorage, lines: previous)
+            }
+            revealedQuote = revealed
         }
         typingAttributes = Theme.baseAttributes
         window?.invalidateCursorRects(for: self)
@@ -285,7 +292,7 @@ final class EditorTextView: NSTextView {
     private func updateQuoteReveal() {
         guard let textStorage, pendingEdit == nil else { return }
         let caret = selectedRange().location
-        let block = EmbeddedQuote.block(containing: caret, in: string as NSString)?.range
+        let block = revealRange(at: caret)
         guard block != revealedQuote else { return }
         let previous = revealedQuote
         revealedQuote = block
@@ -314,9 +321,12 @@ final class EditorTextView: NSTextView {
     }
 
     private var navigating = false
+    /// The caret before the latest selection change, for table navigation.
+    private var tableCaretAnchor = 0
 
     override func moveLeft(_ sender: Any?) {
         clearPendingInlineStyle()
+        if moveCaretAcrossTableCells(forward: false) { return }
         navigating = true
         defer { navigating = false }
         let initial = selectedRange()
@@ -337,6 +347,7 @@ final class EditorTextView: NSTextView {
 
     override func moveRight(_ sender: Any?) {
         clearPendingInlineStyle()
+        if moveCaretAcrossTableCells(forward: true) { return }
         navigating = true
         defer { navigating = false }
         let initial = selectedRange()
@@ -377,7 +388,9 @@ final class EditorTextView: NSTextView {
     @objc private func selectionChanged() {
         repaintSelectionNeighborhood()
         updateQuoteReveal()
+        defer { tableCaretAnchor = selectedRange().location }
         guard !navigating else { return }
+        if pendingEdit == nil, keepCaretInTableCell(previous: tableCaretAnchor) { return }
         let sel = selectedRange()
         if sel.length > 0 { clearPendingInlineStyle() }
         guard sel.length == 0, sel.location > 0 else { return }
@@ -391,6 +404,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func deleteBackward(_ sender: Any?) {
+        if tableBlocksDeletion(backward: true) { return }
         let sel = selectedRange()
         let ns = string as NSString
         if sel.length > 0 {
@@ -429,6 +443,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func deleteForward(_ sender: Any?) {
+        if tableBlocksDeletion(backward: false) { return }
         let sel = selectedRange()
         let ns = string as NSString
         if sel.length > 0 {
@@ -468,7 +483,7 @@ final class EditorTextView: NSTextView {
         highlightEdits()
         let ns = string as NSString
         var copied = ""
-        for range in visibleSourceRanges(in: sel) {
+        for range in visibleSourceRanges(in: sel, keepingTableSyntax: true) {
             copied += ns.substring(with: range)
         }
         let pasteboard = NSPasteboard.general
@@ -548,7 +563,9 @@ final class EditorTextView: NSTextView {
     /// Source ranges for only the rendered characters in a visual selection.
     /// Markdown/HTML syntax is deliberately omitted even when TextKit's raw
     /// selection happens to include it.
-    private func visibleSourceRanges(in selection: NSRange) -> [NSRange] {
+    /// Copying keeps a table's pipes (`keepingTableSyntax`), so rows paste
+    /// as rows.
+    private func visibleSourceRanges(in selection: NSRange, keepingTableSyntax: Bool = false) -> [NSRange] {
         guard let textStorage, selection.length > 0 else { return [] }
         let inlineMarkers = inlineSpans(intersecting: selection).flatMap { span in
             [NSRange(location: span.range.location,
@@ -562,8 +579,9 @@ final class EditorTextView: NSTextView {
             // Derive inline markers structurally as well as consulting the
             // presentation attribute. This keeps editing correct even when
             // adjacent delimiter runs make highlighter precedence subtle.
-            let concealed = inlineMarkers.contains { NSLocationInRange(index, $0) }
-                || textStorage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil
+            let concealed = (inlineMarkers.contains { NSLocationInRange(index, $0) }
+                || textStorage.attribute(.mdMarker, at: index, effectiveRange: nil) != nil)
+                && !(keepingTableSyntax && textStorage.attribute(.mdTableSyntax, at: index, effectiveRange: nil) != nil)
             if concealed {
                 if let start { ranges.append(NSRange(location: start, length: index - start)) }
                 start = nil
@@ -671,6 +689,20 @@ final class EditorTextView: NSTextView {
         guard selection.length > 0 else { return }
         highlightEdits()
         var edits = visibleSourceRanges(in: selection)
+        // Across table cells, only cell text changes (or whole rows go).
+        if let tableEdits = tableAwareEdits(edits, selection: selection) {
+            clearPendingInlineStyle()
+            let merged = mergedRanges(tableEdits)
+            guard let first = merged.first else {
+                setSelectedRange(NSRange(location: selection.location, length: 0))
+                return
+            }
+            for range in merged.reversed() {
+                super.insertText(range == first ? replacement : "", replacementRange: range)
+            }
+            setSelectedRange(NSRange(location: first.location + (replacement as NSString).length, length: 0))
+            return
+        }
         if replaceInsideSingleSpan(edits, selection: selection,
                                    replacement: replacement, deleting: deleting) {
             clearPendingInlineStyle()
@@ -821,6 +853,13 @@ final class EditorTextView: NSTextView {
     // MARK: - Slash commands
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        var string = string
+        // A `|` typed into a table cell is escaped so the row keeps its cells.
+        if replacementRange.location == NSNotFound, !hasMarkedText(),
+           let typed = (string as? String) ?? (string as? NSAttributedString)?.string,
+           let escaped = tableCellText(for: typed, at: selectedRange()) {
+            string = escaped
+        }
         let inserted = (string as? String) ?? (string as? NSAttributedString)?.string
         // Typing at the end of a bold/italic/code/color span continues the
         // style. Whitespace stays outside: a trailing space inside the
@@ -1005,6 +1044,7 @@ final class EditorTextView: NSTextView {
 
     override func insertNewline(_ sender: Any?) {
         clearPendingInlineStyle()
+        if insertNewlineInTable() { return }
         moveCaretOutsideInlineBoundaryForBreak()
         let sel = selectedRange()
         let ns = string as NSString
@@ -1051,6 +1091,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func insertTab(_ sender: Any?) {
+        if moveToAdjacentTableCell(forward: true) { return }
         guard let lineRange = listLineRange() else {
             super.insertTab(sender)
             return
@@ -1059,6 +1100,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func insertBacktab(_ sender: Any?) {
+        if moveToAdjacentTableCell(forward: false) { return }
         guard let lineRange = listLineRange() else {
             super.insertBacktab(sender)
             return
@@ -1741,6 +1783,7 @@ final class EditorTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         if pasteEmbeddedQuote(from: .general) { return }
+        if pasteIntoTableCell() { return }
         pasteAsPlainText(sender)
     }
 }

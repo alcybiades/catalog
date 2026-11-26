@@ -19,11 +19,13 @@ test:
 		Sources/Catalog/Workspace.swift \
 		Sources/Catalog/ReferencePicker.swift \
 		Sources/Catalog/MarkdownHighlighter.swift \
+		Sources/Catalog/MarkdownTable.swift \
 		Sources/Catalog/CodeSyntax.swift \
 		Sources/Catalog/ImageLoader.swift \
 		Sources/Catalog/EmbeddedQuote.swift \
 		Sources/Catalog/ImageClipboard.swift \
 		Sources/Catalog/EditorTextView.swift \
+		Sources/Catalog/EditorTableEditing.swift \
 		Support/BehaviorTests/main.swift
 	@.build/tests/behavior
 	@xcrun swiftc -D CATALOG_TESTING -o .build/tests/workspace $(filter-out Sources/Catalog/main.swift,$(SOURCES)) Support/WorkspaceTests/main.swift

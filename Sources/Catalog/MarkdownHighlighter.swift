@@ -42,7 +42,79 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
     /// Quote cards go down first, so selection and code fills draw over them.
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         drawQuoteCards(forGlyphRange: glyphsToShow, at: origin)
+        drawTables(forGlyphRange: glyphsToShow, at: origin)
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+
+    /// Each table's grid: a rounded frame as wide as its columns, a washed
+    /// header over a stronger rule (drawn in the concealed delimiter row),
+    /// hairlines between body rows, and column dividers.
+    private func drawTables(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        guard let textStorage, let textContainer = textContainers.first else { return }
+        let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        let all = NSRange(location: 0, length: textStorage.length)
+        // Equal tables may share one value, so tell them apart by place.
+        var drawn = Set<Int>()
+        textStorage.enumerateAttribute(.mdTable, in: charRange) { value, range, _ in
+            guard let table = value as? TableBlock, let tableWidth = table.edges.last, table.edges.count > 1 else { return }
+            var block = NSRange()
+            textStorage.attribute(.mdTable, at: range.location, longestEffectiveRange: &block, in: all)
+            guard drawn.insert(block.location).inserted else { return }
+            let glyphs = self.glyphRange(forCharacterRange: block, actualCharacterRange: nil)
+            var rows: [(rect: NSRect, delimiter: Bool)] = []
+            self.enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, _, glyphRange, _ in
+                let index = self.characterIndexForGlyph(at: glyphRange.location)
+                let delimiter = index < textStorage.length
+                    && (textStorage.attribute(.mdTableSyntax, at: index, effectiveRange: nil) as? Int) == 2
+                rows.append((fragment, delimiter))
+            }
+            guard let first = rows.first, let last = rows.last else { return }
+            let padding = textContainer.lineFragmentPadding
+            let x0 = first.rect.minX + padding + table.baseIndent
+            let maxWidth = first.rect.maxX - padding - table.tailInset - x0
+            let clipped = tableWidth > maxWidth + 0.5
+            let width = min(tableWidth, maxWidth)
+            let top = first.rect.minY + table.topMargin
+            let bottom = last.rect.maxY - table.bottomMargin
+            guard width > 4, bottom > top else { return }
+            let frame = NSRect(x: x0, y: top, width: width, height: bottom - top).offsetBy(dx: origin.x, dy: origin.y)
+            let radius = Theme.tableCornerRadius
+            // A table wider than the page runs off its edge, open there.
+            let shapeRect = clipped ? NSRect(x: frame.minX, y: frame.minY, width: frame.width + radius * 2, height: frame.height) : frame
+            let shape = NSBezierPath(roundedRect: shapeRect, xRadius: radius, yRadius: radius)
+            func hairline(from a: NSPoint, to b: NSPoint, color: NSColor) {
+                let path = NSBezierPath()
+                path.move(to: a)
+                path.line(to: b)
+                path.lineWidth = 1
+                color.setStroke()
+                path.stroke()
+            }
+            NSGraphicsContext.current?.saveGraphicsState()
+            shape.addClip()
+            if let rule = rows.first(where: { $0.delimiter }) {
+                let y = (rule.rect.midY + origin.y).rounded() + 0.5
+                Theme.tableHeaderFill.setFill()
+                NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: y - frame.minY).fill()
+                hairline(from: NSPoint(x: frame.minX, y: y), to: NSPoint(x: frame.maxX, y: y), color: Theme.tableHeaderRule)
+            }
+            for (previous, row) in zip(rows, rows.dropFirst()) where !row.delimiter && !previous.delimiter {
+                let y = (row.rect.minY + origin.y).rounded() + 0.5
+                hairline(from: NSPoint(x: frame.minX, y: y), to: NSPoint(x: frame.maxX, y: y), color: Theme.tableRule)
+            }
+            for edge in table.edges.dropFirst().dropLast() where edge < width - 1 {
+                let x = (frame.minX + edge).rounded() + 0.5
+                hairline(from: NSPoint(x: x, y: frame.minY), to: NSPoint(x: x, y: frame.maxY), color: Theme.tableRule)
+            }
+            NSGraphicsContext.current?.restoreGraphicsState()
+            NSGraphicsContext.current?.saveGraphicsState()
+            if clipped { NSBezierPath(rect: frame.insetBy(dx: -1, dy: -1)).addClip() }
+            let outline = NSBezierPath(roundedRect: shapeRect.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
+            outline.lineWidth = 1
+            Theme.tableStroke.setStroke()
+            outline.stroke()
+            NSGraphicsContext.current?.restoreGraphicsState()
+        }
     }
 
     /// Each embedded quote's card spans its whole block, however little of
@@ -163,6 +235,51 @@ extension NSAttributedString.Key {
     /// `CodeState` (language, open comment or string), so an incremental
     /// pass can resume mid-document and knows when a fence change settles.
     static let mdCodeBlock = NSAttributedString.Key("mdCodeBlock")
+    /// Carries a `TableBlock` across every line of a rendered table; the
+    /// layout manager draws its grid behind them.
+    static let mdTable = NSAttributedString.Key("mdTable")
+    /// Table syntax: 1 on the (concealed) pipes, padding and escapes
+    /// between and in cells, 2 on the concealed delimiter row, 3 on one
+    /// being typed. Copying keeps it; editing cells never deletes it.
+    static let mdTableSyntax = NSAttributedString.Key("mdTableSyntax")
+}
+
+/// One rendered table: the source it was styled from and its column grid,
+/// shared by all of its lines (so the attribute runs as one). Immutable:
+/// text storage uniques equal attribute values, so a styling pass marks
+/// rows with a gridless block and replaces it once the grid is known.
+final class TableBlock: NSObject {
+    let table: MarkdownTable.Table
+    /// Column boundaries from the table's left edge; the last is its width.
+    let edges: [CGFloat]
+    /// The table's left edge from the text column, and its right inset.
+    let baseIndent: CGFloat
+    let tailInset: CGFloat
+    /// Paragraph spacing above the first row and below the last that lies
+    /// outside the frame.
+    let topMargin: CGFloat
+    let bottomMargin: CGFloat
+    init(table: MarkdownTable.Table, edges: [CGFloat] = [], baseIndent: CGFloat = 0, tailInset: CGFloat = 0,
+         topMargin: CGFloat = 0, bottomMargin: CGFloat = 0) {
+        self.table = table
+        self.edges = edges
+        self.baseIndent = baseIndent
+        self.tailInset = tailInset
+        self.topMargin = topMargin
+        self.bottomMargin = bottomMargin
+    }
+
+    // Equal when drawn the same, so a restyle that changes nothing leaves
+    // the text storage equal too. `table`'s ranges are where it was styled
+    // and go stale as text above it changes, so they don't count (the
+    // editor reads a table's current source itself).
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TableBlock else { return false }
+        return other.table.alignments == table.alignments && other.table.rows.count == table.rows.count
+            && other.edges == edges && other.baseIndent == baseIndent
+            && other.tailInset == tailInset && other.topMargin == topMargin && other.bottomMargin == bottomMargin
+    }
+    override var hash: Int { edges.count &* 31 &+ table.rows.count }
 }
 
 /// A resolved image embed carried as an attribute on the (concealed)
@@ -778,6 +895,203 @@ final class MarkdownHighlighter {
         return false
     }
 
+    // MARK: - Tables
+
+    /// The last block of row-like lines scanned for a table, per quoting,
+    /// and its table: a pass scans each block once, not once per line.
+    private var tableCache: [Bool: (block: NSRange, table: TableBlock?)]?
+    /// Tables styled this pass, laid out once all their lines are.
+    private var styledTables: [TableBlock] = []
+
+    private func tableRow(at lineRange: NSRange, text: NSString, quoted: Bool, limit: Int?)
+        -> (TableBlock, MarkdownTable.Row)? {
+        var table: TableBlock?
+        if let cached = tableCache?[quoted], NSLocationInRange(lineRange.location, cached.block) {
+            table = cached.table
+        } else {
+            guard let scan = MarkdownTable.scan(containing: lineRange.location, in: text, quoted: quoted, limit: limit)
+            else { return nil }
+            table = scan.table.map { TableBlock(table: $0) }
+            if let table { styledTables.append(table) }
+            if tableCache == nil { tableCache = [:] }
+            tableCache?[quoted] = (scan.block, table)
+        }
+        guard let table, let row = table.table.rows.first(where: { $0.line.location == lineRange.location })
+        else { return nil }
+        return (table, row)
+    }
+
+    /// The (unquoted) table around `location` now, and the one styled there
+    /// before, as either may reach past the lines an edit touched.
+    private func tableExtents(around location: Int, in ts: NSTextStorage) -> [NSRange] {
+        var extents: [NSRange] = []
+        let text = ts.string as NSString
+        guard location < text.length else { return extents }
+        var stale = NSRange()
+        if ts.attribute(.mdTable, at: location, longestEffectiveRange: &stale,
+                        in: NSRange(location: 0, length: ts.length)) != nil {
+            extents.append(stale)
+        }
+        if let table = MarkdownTable.table(containing: location, in: text) { extents.append(table.range) }
+        return extents
+    }
+
+    /// Styles one table row before the inline rules run: the pipes and
+    /// padding between cells conceal, the header is bold, and the delimiter
+    /// row conceals whole (the layout manager draws the header's rule in
+    /// it). Returns true when the line is finished.
+    private func styleTableRow(_ ts: NSTextStorage, row: MarkdownTable.Row, table: TableBlock,
+                               text: NSString, style: Style) -> Bool {
+        ts.addAttribute(.mdTable, value: table, range: row.line)
+        var contentEnd = NSMaxRange(row.line)
+        while contentEnd > row.line.location, [0x0A, 0x0D].contains(text.character(at: contentEnd - 1)) { contentEnd -= 1 }
+        func conceal(_ range: NSRange, kind: Int = 1) {
+            guard range.length > 0 else { return }
+            ts.addAttributes([.mdMarker: true, .mdTableSyntax: kind, .foregroundColor: Theme.dim], range: range)
+        }
+        if row.kind == .delimiter {
+            let content = NSRange(location: row.line.location, length: contentEnd - row.line.location)
+            // While it's being typed (the caret on it), it shows, dimmed.
+            if let caret = revealLocation, caret >= row.line.location, caret <= contentEnd {
+                ts.addAttributes([.mdTableSyntax: 3, .foregroundColor: Theme.dim], range: content)
+            } else {
+                conceal(content, kind: 2)
+            }
+            return true
+        }
+        var position = row.line.location
+        for (index, cell) in row.cells.enumerated() {
+            conceal(NSRange(location: position, length: cell.content.location - position))
+            position = NSMaxRange(cell.content)
+            // An escaped pipe shows as a pipe.
+            let content = text.substring(with: cell.content) as NSString
+            var search = NSRange(location: 0, length: content.length)
+            while search.length > 0 {
+                let found = content.range(of: "\\|", options: .literal, range: search)
+                guard found.location != NSNotFound else { break }
+                conceal(NSRange(location: cell.content.location + found.location, length: 1))
+                search = NSRange(location: NSMaxRange(found), length: content.length - NSMaxRange(found))
+            }
+            // Cells past the header's count aren't part of the table (GitHub
+            // drops them); they stay visible, faintly, so they can be fixed.
+            if index >= table.table.columnCount {
+                ts.addAttribute(.foregroundColor, value: Theme.dim, range: cell.content)
+            }
+        }
+        conceal(NSRange(location: position, length: contentEnd - position))
+        if row.kind == .header {
+            let (font, synthetic) = style.bold
+            for cell in row.cells where cell.content.length > 0 {
+                ts.addAttribute(.font, value: font, range: cell.content)
+                if let color = style.boldColor { ts.addAttribute(.foregroundColor, value: color, range: cell.content) }
+                if synthetic { ts.addAttribute(.strokeWidth, value: -3.0, range: cell.content) }
+            }
+        }
+        return false
+    }
+
+    /// Aligns a styled table's cells into columns, each as wide as its
+    /// widest cell. A cell's text is placed by kerning the concealed
+    /// characters before it — the first carries the gap to the column's
+    /// divider and the last the rest, so a click lands in the nearer cell —
+    /// and a row's first cell by its paragraph indent. The source keeps its
+    /// own spacing. Rows never wrap: a table wider than the page clips at
+    /// its edge instead of breaking apart.
+    private func layOutTable(_ placeholder: TableBlock, in ts: NSTextStorage, style: Style) {
+        let table = placeholder.table
+        guard NSMaxRange(table.range) <= ts.length else { return }
+        func width(_ range: NSRange) -> CGFloat {
+            range.length > 0 ? ts.attributedSubstring(from: range).size().width : 0
+        }
+        let textRows = table.textRows
+        let columns = max(table.columnCount, textRows.map(\.cells.count).max() ?? 0)
+        guard columns > 0 else { return }
+        let padding = (style.fontSize * 0.6).rounded()
+        let rowPadding = (style.fontSize * 0.28).rounded()
+        let margin = (style.fontSize * 0.5).rounded()
+        var contentWidths: [[CGFloat]] = []
+        var columnWidths = [CGFloat](repeating: (style.fontSize * 1.2).rounded(), count: columns)
+        for row in textRows {
+            let widths = row.cells.map { width($0.content) }
+            for (column, value) in widths.enumerated() { columnWidths[column] = max(columnWidths[column], value.rounded(.up)) }
+            contentWidths.append(widths)
+        }
+        var edges: [CGFloat] = [0]
+        for value in columnWidths { edges.append(edges[edges.count - 1] + value + padding * 2) }
+
+        func paragraph(at location: Int) -> NSMutableParagraphStyle {
+            let current = ts.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle
+            return (current?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        }
+        let firstStyle = paragraph(at: table.range.location)
+        let lastStyle = paragraph(at: table.rows[table.rows.count - 1].line.location)
+        let block = TableBlock(table: table, edges: edges, baseIndent: firstStyle.firstLineHeadIndent,
+                               tailInset: firstStyle.tailIndent < 0 ? -firstStyle.tailIndent : 0,
+                               topMargin: firstStyle.paragraphSpacingBefore + margin,
+                               bottomMargin: lastStyle.paragraphSpacing + margin)
+        ts.addAttribute(.mdTable, value: block, range: table.range)
+
+        var textIndex = 0
+        for (index, row) in table.rows.enumerated() {
+            let paragraph = paragraph(at: row.line.location)
+            paragraph.lineBreakMode = .byClipping
+            if row.kind == .delimiter {
+                guard ts.attribute(.mdMarker, at: row.line.location, effectiveRange: nil) != nil else {
+                    ts.addAttribute(.paragraphStyle, value: paragraph, range: row.line)
+                    continue
+                }
+                paragraph.lineHeightMultiple = 0
+                paragraph.minimumLineHeight = 1
+                paragraph.maximumLineHeight = 1
+                paragraph.paragraphSpacingBefore = 0
+                paragraph.paragraphSpacing = 0
+                ts.addAttribute(.paragraphStyle, value: paragraph, range: row.line)
+                continue
+            }
+            let widths = contentWidths[textIndex]
+            textIndex += 1
+            func target(_ column: Int) -> CGFloat {
+                let alignment = column < table.alignments.count ? table.alignments[column] : .none
+                let slack = columnWidths[column] - widths[column]
+                switch alignment {
+                case .right: return edges[column] + padding + slack
+                case .center: return edges[column] + padding + (slack / 2).rounded()
+                case .none, .left: return edges[column] + padding
+                }
+            }
+            if index == 0 { paragraph.paragraphSpacingBefore += margin }
+            if index == table.rows.count - 1 { paragraph.paragraphSpacing += margin }
+            paragraph.paragraphSpacingBefore += rowPadding
+            paragraph.paragraphSpacing += rowPadding
+            guard let firstCell = row.cells.first else {
+                ts.addAttribute(.paragraphStyle, value: paragraph, range: row.line)
+                continue
+            }
+            let lead = width(NSRange(location: row.line.location, length: firstCell.content.location - row.line.location))
+            paragraph.firstLineHeadIndent = block.baseIndent + max(0, target(0) - lead)
+            paragraph.headIndent = paragraph.firstLineHeadIndent
+            ts.addAttribute(.paragraphStyle, value: paragraph, range: row.line)
+            var x = max(lead, target(0)) + widths[0]
+            for column in row.cells.indices.dropFirst() {
+                let previousEnd = NSMaxRange(row.cells[column - 1].content)
+                let separator = NSRange(location: previousEnd, length: row.cells[column].content.location - previousEnd)
+                guard separator.length > 0 else { continue }
+                let total = max(0, target(column) - x - width(separator))
+                if separator.length > 1 {
+                    let firstChar = NSRange(location: separator.location, length: 1)
+                    let toDivider = min(total, max(0, edges[column] - x - width(firstChar)))
+                    ts.addAttribute(.kern, value: toDivider, range: firstChar)
+                    ts.addAttribute(.kern, value: total - toDivider,
+                                    range: NSRange(location: NSMaxRange(separator) - 1, length: 1))
+                } else {
+                    ts.addAttribute(.kern, value: total, range: separator)
+                }
+                x = max(target(column), x + width(separator)) + widths[column]
+            }
+        }
+    }
+
+
     /// Styles whole lines from `start` (a line start) through `end`, or to
     /// the end of the document when `end` is nil.
     private func restyle(_ textStorage: NSTextStorage, from start: Int, to end: Int?) {
@@ -799,9 +1113,20 @@ final class MarkdownHighlighter {
             if lineEnd > start, let run = EmbeddedQuote.quoteRun(containing: lineEnd - 1, in: text) {
                 end = max(lineEnd, NSMaxRange(run))
             }
+            // So is a table: its columns are as wide as its widest cells.
+            // The table there now and the one styled before both count, as
+            // an edit can make or break one.
+            for location in [start, max(start, (end ?? start) - 1)] {
+                for extent in tableExtents(around: location, in: textStorage) {
+                    start = min(start, extent.location)
+                    end = max(end ?? 0, NSMaxRange(extent))
+                }
+            }
         }
         cardCache = nil
-        defer { cardCache = nil }
+        tableCache = nil
+        styledTables = []
+        defer { cardCache = nil; tableCache = nil; styledTables = [] }
 
         textStorage.beginEditing()
         var code = start > 0
@@ -817,7 +1142,9 @@ final class MarkdownHighlighter {
             highlightLine(textStorage, text: text, lineRange: lineRange, code: &code, style: style)
             if let code { textStorage.addAttribute(.mdCodeBlock, value: code.attributeValue, range: lineRange) }
             lineStart = NSMaxRange(lineRange)
-            if let end, lineStart >= end, code == previous { break }
+            // A table is laid out whole, so every row of one styled is too.
+            if let end, lineStart >= end, code == previous,
+               !styledTables.contains(where: { NSMaxRange($0.table.range) > lineStart }) { break }
         }
 
         let styled = NSRange(location: start, length: lineStart - start)
@@ -825,6 +1152,8 @@ final class MarkdownHighlighter {
             guard value != nil else { return }
             textStorage.addAttribute(.font, value: style.concealedFont, range: range)
         }
+        // Columns are measured once every cell has its final fonts.
+        for table in styledTables { layOutTable(table, in: textStorage, style: style) }
         textStorage.endEditing()
     }
 
@@ -893,11 +1222,21 @@ final class MarkdownHighlighter {
         // Embedded quotes draw as a card; their body text still takes the
         // inline rules below, but not the plain blockquote styling.
         var inCard = false
+        var cardBlock: EmbeddedQuote.Block?
         if line.hasPrefix(">") || line.first?.isWhitespace == true,
            let (block, card, revealed) = quoteCard(at: lineRange, text: text, style: style) {
             if styleQuoteCardLine(ts, line: line, lineRange: lineRange, block: block, card: card,
                                   revealed: revealed, style: style) { return }
             inCard = true
+            // A revealed card shows its tables as source, like the rest of it.
+            if !revealed { cardBlock = block }
+        }
+
+        // Table rows: the pipes conceal, and the layout pass aligns cells.
+        if !inCard || cardBlock != nil,
+           let (table, row) = tableRow(at: lineRange, text: text, quoted: inCard,
+                                       limit: cardBlock?.attribution.line.location) {
+            if styleTableRow(ts, row: row, table: table, text: text, style: style) { return }
         }
 
         // Block-level rules.
