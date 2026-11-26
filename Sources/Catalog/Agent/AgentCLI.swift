@@ -41,6 +41,8 @@ enum ClaudeCodeRunner {
         }
         var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                          "--permission-mode", "acceptEdits", "--model", model,
+                         // Headless runs can't ask, so tools that would prompt are denied unless allowed here.
+                         "--allowedTools", "WebSearch,WebFetch",
                          "--append-system-prompt", AgentCLIPrompt.instructions]
         if let sessionID { arguments += ["--resume", sessionID] }
         if let extraDirectory { arguments += ["--add-dir", extraDirectory.path] }
