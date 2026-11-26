@@ -30,7 +30,15 @@
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
   composite, glass included; `--snapshot-frames N` (`--snapshot-interval
   seconds`, default 0.1) keeps capturing as `path-f1.png`, … to catch
-  animations.
+  animations. `--frame x,y,w,h` sets the window frame in points from the
+  primary screen's top-left; a folder path argument opens it as the workspace
+  (add a note's path to show it too) and `--media` opens it in the icon
+  browser; `--assistant` shows the floating panel and `--assistant-docked` the
+  docked one; `--transcript file.json` (test mode only) preloads a canned
+  conversation, as in `Support/Showcase/transcript.json`, without calling a
+  model. Each test-mode launch gets its own preferences suite, so concurrent
+  instances keep their own themes. `Support/Showcase/stage.sh [app] [shots]`
+  tiles the four README showcase windows, optionally snapshotting each.
 - Open notes follow their files live: to check how an outside (assistant)
   edit animates in, launch on a fixture note with `--snapshot-frames`, wait
   for the first snapshot, then overwrite the fixture file from the shell.

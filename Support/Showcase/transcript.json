@@ -1,0 +1,28 @@
+[
+  {
+    "role": "user",
+    "text": "I have three days in Kyoto in November. What should I see, and when?",
+    "detail": "Kyoto"
+  },
+  {
+    "role": "tool",
+    "text": "Read “Kyoto” on Wikipedia"
+  },
+  {
+    "role": "assistant",
+    "text": "November is peak **autumn foliage**, so plan around the maples and go early.\n\n1. **Day one, east:** Kiyomizu-dera at opening, then walk down through Sannenzaka to Gion.\n2. **Day two, north and west:** Kinkaku-ji, then the Arashiyama bamboo grove before 9 am.\n3. **Day three, south:** Fushimi Inari at sunrise; the upper torii paths are quiet.\n\nThe city has *about 1,600 temples*, so pick a few and linger rather than rushing them."
+  },
+  {
+    "role": "user",
+    "text": "Add that to my trip checklist in Field Notes."
+  },
+  {
+    "role": "tool",
+    "text": "Edited Field Notes.md",
+    "url": "Notebook/Field Notes.md"
+  },
+  {
+    "role": "assistant",
+    "text": "Done. I added a **Kyoto** section under *To do* with one checkbox per day, so you can tick them off as you go."
+  }
+]
