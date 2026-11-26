@@ -740,5 +740,226 @@ check("merge with no local edits takes theirs", TextDiff.merge(base: "a", mine: 
 check("caret after an insertion moves with it", "\(LiveEditPlan.map(10, through: .insert(location: 4, text: "abc")))", "13")
 check("caret inside a deletion lands at its start", "\(LiveEditPlan.map(6, through: .delete(NSRange(location: 4, length: 5))))", "4")
 
+// MARK: - Tables
+
+do {
+    func parse(_ text: String, at location: Int = 0, quoted: Bool = false) -> MarkdownTable.Table? {
+        MarkdownTable.table(containing: location, in: text as NSString, quoted: quoted)
+    }
+    func cellTexts(_ text: String, _ row: MarkdownTable.Row) -> String {
+        row.cells.map { (text as NSString).substring(with: $0.content) }.joined(separator: ",")
+    }
+
+    let aligned = "| a | b | c | d |\n| --- | :-- | :-: | --: |\n| 1 | 2 | 3 | 4 |\n"
+    let alignedTable = parse(aligned)
+    check("table alignments from the delimiter row",
+          alignedTable.map { $0.alignments.map { "\($0)" }.joined(separator: ",") } ?? "nil", "none,left,center,right")
+    check("table rows and cells", alignedTable.map { t in t.textRows.map { cellTexts(aligned, $0) }.joined(separator: " / ") } ?? "nil",
+          "a,b,c,d / 1,2,3,4")
+    check("table spans header through last body row", alignedTable.map { NSStringFromRange($0.range) } ?? "nil",
+          NSStringFromRange(NSRange(location: 0, length: (aligned as NSString).length)))
+
+    let escaped = "| a \\| b | `x \\| y` |\n|---|---|\n| one \\| two | three |"
+    check("escaped pipes stay inside cells",
+          parse(escaped).map { t in t.textRows.map { cellTexts(escaped, $0) }.joined(separator: " / ") } ?? "nil",
+          "a \\| b,`x \\| y` / one \\| two,three")
+
+    let ragged = "| h1 | h2 | h3 |\n| - | - | - |\n| only |\n| a | b | c | extra |\n|  | | |"
+    let raggedTable = parse(ragged)
+    check("ragged rows keep their own cells",
+          raggedTable.map { t in t.bodyRows.map { cellTexts(ragged, $0) }.joined(separator: " / ") } ?? "nil",
+          "only / a,b,c,extra / ,,")
+    checkTrue("an empty cell's caret sits inside its padding",
+              raggedTable.map { t in t.rows[4].cells.allSatisfy { $0.content.length == 0 && $0.content.location >= $0.range.location && $0.content.location <= NSMaxRange($0.range) } } ?? false)
+
+    let bare = "Name | Role\n--- | ---\nAda | Engineer\nGrace | Admiral"
+    check("tables without leading or trailing pipes",
+          parse(bare, at: 30).map { t in t.textRows.map { cellTexts(bare, $0) }.joined(separator: " / ") } ?? "nil",
+          "Name,Role / Ada,Engineer / Grace,Admiral")
+
+    checkTrue("a pipe in a paragraph is not a table", parse("Either this | or that.\nAnd more text.") == nil)
+    checkTrue("a setext heading is not a table", parse("Title | x\n---") == nil)
+    checkTrue("a delimiter row must match the header's cells", parse("| a | b |\n| --- |\n| 1 | 2 |") == nil)
+    checkTrue("a delimiter needs dashes", parse("| a | b |\n| x | y |") == nil)
+    checkTrue("a list item with pipes is not a header", parse("- a | b\n--- | ---") == nil)
+    let afterParagraph = "Intro line\n| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter | text"
+    let found = parse(afterParagraph, at: 12)
+    check("a table starts at its header and ends at a blank line",
+          found.map { (afterParagraph as NSString).substring(with: $0.range) } ?? "nil", "| a | b |\n|---|---|\n| 1 | 2 |\n")
+    checkTrue("the paragraph line above a table isn't in it", parse(afterParagraph, at: 2) == nil)
+    checkTrue("text after the blank line isn't in it", parse(afterParagraph, at: (afterParagraph as NSString).length - 2) == nil)
+    let blockEnd = "| a |\n| - |\n| 1 |\n# Heading | x"
+    check("another block ends a table", parse(blockEnd).map { "\($0.rows.count)" } ?? "nil", "3")
+    let fenced = "```\n| a | b |\n|---|---|\n```\n\n| c |\n|---|\n"
+    check("tables in fenced code are skipped",
+          MarkdownTable.tables(in: fenced as NSString).map { (fenced as NSString).substring(with: $0.range) }.joined(), "| c |\n|---|\n")
+    let quotedTable = "> | q | r |\n> | :-: | -- |\n> | 1 | 2 |\n> — [Src](Src.md)"
+    check("tables inside a blockquote", parse(quotedTable, at: 2, quoted: true).map { t in t.textRows.map { cellTexts(quotedTable, $0) }.joined(separator: " / ") } ?? "nil",
+          "q,r / 1,2 / — [Src](Src.md)")
+    check("an embedded quote's attribution ends its table",
+          MarkdownTable.table(containing: 2, in: quotedTable as NSString, quoted: true,
+                              limit: (quotedTable as NSString).range(of: "> —").location).map { "\($0.rows.count)" } ?? "nil", "3")
+    check("cell text is escaped", MarkdownTable.escapeCellText("a|b\nc \\| d"), "a\\|b c \\| d")
+}
+
+// Rendering and editing a table in place.
+do {
+    let source = "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Ada | 1 |\n| Grace | 22 |\n\nAfter"
+    func tableView(caretAfter needle: String, in text: String = source) -> EditorTextView {
+        let tv = makeTV(text, caret: 0)
+        tv.rehighlight()
+        let found = (text as NSString).range(of: needle)
+        tv.setSelectedRange(NSRange(location: NSMaxRange(found), length: 0))
+        return tv
+    }
+    func block(_ tv: EditorTextView) -> TableBlock? {
+        let at = (tv.string as NSString).range(of: "| Name").location
+        return tv.textStorage?.attribute(.mdTable, at: at, effectiveRange: nil) as? TableBlock
+    }
+    var tv = tableView(caretAfter: "Ada")
+    let pipe = (source as NSString).range(of: "| Ada").location
+    checkTrue("table pipes are concealed", tv.textStorage?.attribute(.mdMarker, at: pipe, effectiveRange: nil) != nil)
+    checkTrue("cell text is visible", tv.textStorage?.attribute(.mdMarker, at: pipe + 2, effectiveRange: nil) == nil)
+    checkTrue("the delimiter row is concealed",
+              tv.textStorage?.attribute(.mdMarker, at: (source as NSString).range(of: ":---").location, effectiveRange: nil) != nil)
+    checkTrue("rows don't wrap", (tv.textStorage?.attribute(.paragraphStyle, at: pipe, effectiveRange: nil) as? NSParagraphStyle)?.lineBreakMode == .byClipping)
+    let qtyEdge = block(tv)?.edges ?? []
+    check("a table lays out one column per header cell", "\(qtyEdge.count)", "3")
+
+    tv.insertText("m Lovelace", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("typing in a cell edits that cell", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Adam Lovelace | 1 |\n| Grace | 22 |\n\nAfter")
+    checkTrue("typing a longer cell widens its column", (block(tv)?.edges[1] ?? 0) > (qtyEdge.count > 1 ? qtyEdge[1] : .infinity))
+    tv.insertText("|", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("a typed pipe is escaped", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Adam Lovelace\\| | 1 |\n| Grace | 22 |\n\nAfter")
+    checkTrue("an escaped pipe keeps the row's cells", block(tv)?.table.rows[2].cells.count == 2)
+
+    tv = tableView(caretAfter: "| Ada")
+    tv.setSelectedRange(NSRange(location: (source as NSString).range(of: "Ada").location, length: 0))
+    tv.deleteBackward(nil)
+    check("backspace at a cell's start keeps the row", tv.string, source)
+    tv = tableView(caretAfter: "Ada")
+    tv.deleteForward(nil)
+    check("forward delete at a cell's end keeps the row", tv.string, source)
+    tv.deleteBackward(nil)
+    check("backspace inside a cell deletes text", tv.string, source.replacingOccurrences(of: "| Ada |", with: "| Ad |"))
+
+    tv = tableView(caretAfter: "Ada")
+    tv.moveRight(nil)
+    check("→ at a cell's end goes to the next cell", "\(tv.selectedRange().location)", "\((source as NSString).range(of: "1 |").location)")
+    tv.moveLeft(nil)
+    check("← at a cell's start goes back to the previous cell", "\(tv.selectedRange().location)", "\(NSMaxRange((source as NSString).range(of: "Ada")))")
+
+    tv = tableView(caretAfter: "| Ada ")
+    check("a caret on concealed pipes moves into a cell", "\(tv.selectedRange().location)",
+          "\(NSMaxRange((source as NSString).range(of: "Ada")))")
+
+    tv = tableView(caretAfter: "Ada")
+    tv.insertTab(nil)
+    check("Tab goes to the end of the next cell", "\(tv.selectedRange().location)", "\(NSMaxRange((source as NSString).range(of: "| 1")))")
+    tv.insertTab(nil)
+    check("Tab at a row's end goes to the next row", "\(tv.selectedRange().location)", "\(NSMaxRange((source as NSString).range(of: "Grace")))")
+    tv.insertBacktab(nil)
+    check("Shift-Tab goes back a cell", "\(tv.selectedRange().location)", "\(NSMaxRange((source as NSString).range(of: "| 1")))")
+
+    tv = tableView(caretAfter: "22")
+    tv.insertTab(nil)
+    check("Tab past the last cell adds a row", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Ada | 1 |\n| Grace | 22 |\n|   |   |\n\nAfter")
+    tv.insertText("Hopper", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("typing in the new row fills its first cell", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Ada | 1 |\n| Grace | 22 |\n| Hopper  |   |\n\nAfter")
+
+    tv = tableView(caretAfter: "Ada")
+    tv.insertNewline(nil)
+    check("Return goes to the same column in the next row", "\(tv.selectedRange().location)",
+          "\(NSMaxRange((source as NSString).range(of: "Grace")))")
+    tv.insertNewline(nil)
+    check("Return in the last row adds a row", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| Ada | 1 |\n| Grace | 22 |\n|   |   |\n\nAfter")
+    tv.insertNewline(nil)
+    check("Return in an empty last row leaves the table", tv.string, source.replacingOccurrences(of: "22 |\n", with: "22 |\n\n"))
+
+    tv = tableView(caretAfter: "Ada")
+    let adaStart = (source as NSString).range(of: "Ada").location
+    tv.setSelectedRange(NSRange(location: adaStart + 1, length: NSMaxRange((source as NSString).range(of: "Gra")) - adaStart - 1))
+    tv.deleteBackward(nil)
+    check("deleting across cells keeps pipes and rows", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n| A |  |\n| ce | 22 |\n\nAfter")
+
+    tv = tableView(caretAfter: "Intro")
+    let rows = (source as NSString).range(of: "| Ada | 1 |\n| Grace | 22 |\n")
+    tv.setSelectedRange(rows)
+    tv.deleteBackward(nil)
+    check("deleting whole body rows removes them", tv.string,
+          "Intro\n\n| Name | Qty |\n| :--- | ---: |\n\nAfter")
+
+    // Undo restores the source exactly.
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: true)
+    tv = tableView(caretAfter: "Grace")
+    window.contentView = tv
+    tv.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+    tv.insertTab(nil)
+    tv.insertTab(nil)
+    tv.undoManager?.undo()
+    tv.undoManager?.undo()
+    check("undo restores a table's source", tv.string, source)
+
+    // Revealing the delimiter row while typing it, and concealing it after.
+    tv = makeTV("| a | b |\n", caret: 10)
+    tv.rehighlight()
+    tv.insertText("|---|---|", replacementRange: NSRange(location: NSNotFound, length: 0))
+    checkTrue("a delimiter row being typed shows", tv.textStorage?.attribute(.mdMarker, at: 12, effectiveRange: nil) == nil)
+    tv.insertNewline(nil)
+    check("Return after typing a delimiter row starts a body row", tv.string, "| a | b |\n|---|---|\n|   |   |")
+    checkTrue("the delimiter row conceals once the caret leaves", tv.textStorage?.attribute(.mdMarker, at: 12, effectiveRange: nil) != nil)
+    tv.insertText("x|y", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("a new row's cells take typing", tv.string, "| a | b |\n|---|---|\n| x\\|y  |   |")
+}
+
+// Incremental passes over text with tables match a full pass.
+do {
+    var seed: UInt64 = 0x7AB1E
+    func random(_ n: Int) -> Int {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        return Int((seed >> 33) % UInt64(max(n, 1)))
+    }
+    let pieces = ["| a | b |\n", "|---|:-:|\n", "| **x** | `y` |\n", "c | d\n", "--- | ---\n", "\n", "text\n", "|", " ",
+                  "```\n", "> | q |\n", "> | - |\n", "> — [S](S.md)\n", "x", "-", "\\|", "# H\n"]
+    func normalized(_ text: NSAttributedString) -> NSAttributedString {
+        let copy = NSMutableAttributedString(attributedString: text)
+        copy.enumerateAttribute(.glyphInfo, in: NSRange(location: 0, length: copy.length)) { value, range, _ in
+            guard let info = value as? NSGlyphInfo else { return }
+            copy.addAttribute(.glyphInfo, value: "\(info.glyphID) \(info.baseString)", range: range)
+        }
+        copy.enumerateAttribute(.mdQuoteCard, in: NSRange(location: 0, length: copy.length)) { value, range, _ in
+            guard let card = value as? QuoteCard else { return }
+            copy.addAttribute(.mdQuoteCard, value: "card \(card.destination)", range: range)
+        }
+        copy.enumerateAttribute(.mdQuoteSource, in: NSRange(location: 0, length: copy.length)) { value, range, _ in
+            if value != nil { copy.addAttribute(.mdQuoteSource, value: "source", range: range) }
+        }
+        return copy
+    }
+    let tv = makeTV((0..<40).map { _ in pieces[random(pieces.count)] }.joined(), caret: 0)
+    tv.rehighlight()
+    var mismatch: String?
+    for step in 0..<300 where mismatch == nil {
+        for _ in 0...random(3) {
+            let length = tv.textStorage!.length
+            let location = random(length + 1)
+            let range = NSRange(location: location, length: random(4) == 0 ? min(random(12), length - location) : 0)
+            let replacement = range.length > 0 && random(2) == 0 ? "" : pieces[random(pieces.count)]
+            tv.textStorage!.replaceCharacters(in: range, with: replacement)
+        }
+        tv.highlightEdits()
+        let incremental = normalized(tv.textStorage!)
+        tv.rehighlight()
+        if !incremental.isEqual(to: normalized(tv.textStorage!)) { mismatch = "step \(step): \(tv.string.debugDescription)" }
+    }
+    check("incremental highlighting of tables matches a full pass", mismatch ?? "", "")
+}
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

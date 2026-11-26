@@ -78,6 +78,14 @@ runs that tool's login in Terminal; Catalog never handles those credentials.
 Conversations are shared across windows, and the title menu at the top of the
 panel lists them.
 
+## Tables
+
+GitHub-style pipe tables render as tables, with columns aligned as the
+delimiter row says (`:--`, `:-:`, `--:`). Click a cell to edit it in place:
+Tab and Shift-Tab move between cells, Return moves down a row (adding one
+after the last), and a `|` you type is saved as `\|`. Put the caret on the
+delimiter row to edit it.
+
 ## Links and references
 
 With a folder open, type `@` or `[[` to reference any file. Catalog uses
