@@ -84,7 +84,8 @@ GitHub-style pipe tables render as tables, with columns aligned as the
 delimiter row says (`:--`, `:-:`, `--:`). Click a cell to edit it in place:
 Tab and Shift-Tab move between cells, Return moves down a row (adding one
 after the last), and a `|` you type is saved as `\|`. Put the caret on the
-delimiter row to edit it.
+delimiter row to edit it. A table wider than the page scrolls sideways: swipe
+over it (or Shift-scroll), or move the caret into a hidden column.
 
 ## Links and references
 

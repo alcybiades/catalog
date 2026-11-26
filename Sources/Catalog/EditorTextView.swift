@@ -321,6 +321,33 @@ final class EditorTextView: NSTextView {
     }
 
     private var navigating = false
+    /// A sideways swipe (or Shift-scroll) over a table wider than the page
+    /// scrolls its columns; the whole gesture, momentum included, stays
+    /// with the table it began on.
+    private var scrollingTable = false
+
+    override func scrollWheel(with event: NSEvent) {
+        let discrete = event.phase == [] && event.momentumPhase == []
+        let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+        // A gesture (or a mouse wheel's single tick) decides at its start.
+        if discrete || event.phase == .began {
+            var point = convert(event.locationInWindow, from: nil)
+            point.x -= textContainerOrigin.x
+            point.y -= textContainerOrigin.y
+            scrollTablePoint = point
+            scrollingTable = horizontal
+        }
+        // A new gesture decides afresh; this one's momentum stays put.
+        defer { if discrete || event.momentumPhase == .ended || event.momentumPhase == .cancelled { scrollingTable = false } }
+        if scrollingTable, let tables = layoutManager as? CodeBackgroundLayoutManager {
+            let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
+            if event.scrollingDeltaX == 0 || tables.scrollTable(at: scrollTablePoint, by: -event.scrollingDeltaX * scale) { return }
+            scrollingTable = false
+        }
+        super.scrollWheel(with: event)
+    }
+    private var scrollTablePoint = NSPoint.zero
+
     /// The caret before the latest selection change, for table navigation.
     private var tableCaretAnchor = 0
 
@@ -388,6 +415,10 @@ final class EditorTextView: NSTextView {
     @objc private func selectionChanged() {
         repaintSelectionNeighborhood()
         updateQuoteReveal()
+        // A caret moving into a wide table's hidden columns scrolls them in.
+        if selectedRange().length == 0, let tables = layoutManager as? CodeBackgroundLayoutManager {
+            tables.revealTableCharacter(selectedRange().location)
+        }
         defer { tableCaretAnchor = selectedRange().location }
         guard !navigating else { return }
         if pendingEdit == nil, keepCaretInTableCell(previous: tableCaretAnchor) { return }
