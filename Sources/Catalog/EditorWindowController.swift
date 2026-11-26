@@ -153,7 +153,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         textView.addSubview(titleView)
 
         scrollView = NSScrollView()
+        scrollView.contentView = VerticalClipView()
         scrollView.drawsBackground = false
+        scrollView.horizontalScrollElasticity = .none
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .overlay
         scrollView.documentView = textView
@@ -468,6 +470,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     @objc private func viewResized() {
+        // The note is exactly as wide as its scroll view: anything wider
+        // would shift its centered column sideways, off the page.
+        let width = scrollView.contentSize.width
+        if width > 0, abs(textView.frame.width - width) > 0.5 {
+            textView.setFrameSize(NSSize(width: width, height: textView.frame.height))
+        }
         updateInsets()
         updateSidebar()
     }

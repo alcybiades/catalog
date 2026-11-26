@@ -96,6 +96,18 @@ extension CodeBackgroundLayoutManager {
         if cursor < NSMaxRange(glyphs) { draw(NSRange(location: cursor, length: NSMaxRange(glyphs) - cursor)) }
     }
 
+    /// Whether a table under `point` (container coordinates) is wider than
+    /// the page.
+    func canScrollTable(at point: NSPoint) -> Bool {
+        guard let container = textContainers.first, numberOfGlyphs > 0 else { return false }
+        let glyph = glyphIndex(for: point, in: container)
+        guard glyph < numberOfGlyphs,
+              lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).insetBy(dx: 0, dy: -2).contains(point),
+              let table = tableBlock(at: characterIndexForGlyph(at: glyph)),
+              let limits = tableScrollLimits(table.block) else { return false }
+        return limits.maxOffset > 0.5
+    }
+
     /// Scrolls the table under `point` (container coordinates) by `delta`;
     /// true when there's a scrollable table there.
     func scrollTable(at point: NSPoint, by delta: CGFloat) -> Bool {
@@ -125,5 +137,17 @@ extension CodeBackgroundLayoutManager {
         // Near either end, go all the way there.
         if target < margin { target = 0 } else if target > limits.maxOffset - margin { target = limits.maxOffset }
         if target != offset { setTableOffset(target, forTableAt: charIndex) }
+    }
+}
+
+/// The note's clip view only ever scrolls vertically. The page has no
+/// horizontal scroller, but AppKit still scrolls sideways to show a caret
+/// or selection it thinks is offscreen, as a scrolled table's shifted rows
+/// can be, which left the whole page stuck off to one side.
+final class VerticalClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        rect.origin.x = 0
+        return rect
     }
 }
