@@ -65,9 +65,10 @@ extension CodeBackgroundLayoutManager {
 
     /// Draws `glyphs` with each table's part clipped to its visible window.
     func drawClippingTables(_ glyphs: NSRange, at origin: NSPoint, draw: (NSRange) -> Void) {
-        guard let textStorage, let container = textContainers.first, glyphs.length > 0 else { draw(glyphs); return }
+        guard !snapshotting, let textStorage, let container = textContainers.first, glyphs.length > 0 else { draw(glyphs); return }
         let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-        var tables: [(glyphs: NSRange, clip: NSRect)] = []
+        let hidden = hiddenTables[ObjectIdentifier(textStorage)] ?? []
+        var tables: [(glyphs: NSRange, clip: NSRect, hidden: Bool)] = []
         var seen = Set<Int>()
         textStorage.enumerateAttribute(.mdTable, in: chars) { value, range, _ in
             guard value is TableBlock, let table = tableBlock(at: range.location),
@@ -80,19 +81,66 @@ extension CodeBackgroundLayoutManager {
             guard !bounds.isNull else { return }
             let left = container.lineFragmentPadding + table.block.baseIndent
             let clip = NSRect(x: left + origin.x, y: bounds.minY + origin.y, width: limits.view, height: bounds.height)
-            tables.append((tableGlyphs, clip))
+            tables.append((tableGlyphs, clip, hidden.contains(table.range.location)))
         }
         guard !tables.isEmpty else { draw(glyphs); return }
         var cursor = glyphs.location
         for table in tables.sorted(by: { $0.glyphs.location < $1.glyphs.location }) {
             if table.glyphs.location > cursor { draw(NSRange(location: cursor, length: table.glyphs.location - cursor)) }
-            NSGraphicsContext.current?.saveGraphicsState()
-            NSBezierPath(rect: table.clip).addClip()
-            draw(table.glyphs)
-            NSGraphicsContext.current?.restoreGraphicsState()
+            if !table.hidden {
+                NSGraphicsContext.current?.saveGraphicsState()
+                NSBezierPath(rect: table.clip).addClip()
+                draw(table.glyphs)
+                NSGraphicsContext.current?.restoreGraphicsState()
+            }
             cursor = max(cursor, NSMaxRange(table.glyphs))
         }
         if cursor < NSMaxRange(glyphs) { draw(NSRange(location: cursor, length: NSMaxRange(glyphs) - cursor)) }
+    }
+
+    /// The whole table holding `charIndex` (every column, as scrolled to 0)
+    /// drawn into an image, with its frame's top-left in text container
+    /// coordinates, for sliding natively during a live scroll.
+    func tableSnapshot(at charIndex: Int, scale: CGFloat, appearance: NSAppearance) -> (image: CGImage, size: NSSize)? {
+        guard let textStorage, let container = textContainers.first, let table = tableBlock(at: charIndex),
+              let width = table.block.edges.last else { return nil }
+        let glyphs = glyphRange(forCharacterRange: table.range, actualCharacterRange: nil)
+        var rows = NSRect.null
+        enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in rows = rows.union(rect) }
+        guard !rows.isNull else { return nil }
+        let top = rows.minY + table.block.topMargin
+        let height = rows.maxY - table.block.bottomMargin - top
+        let size = NSSize(width: ceil(width) + 2, height: ceil(height))
+        guard height > 0, let context = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: 0, y: size.height)
+        context.scaleBy(x: 1, y: -1)
+        let offset = tableOffset(at: table.range.location, in: textStorage)
+        // The rows lie shifted left by the offset; move them back to 0.
+        let origin = NSPoint(x: offset - container.lineFragmentPadding - table.block.baseIndent, y: -top)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        snapshotting = true
+        appearance.performAsCurrentDrawingAppearance {
+            drawBackground(forGlyphRange: glyphs, at: origin)
+            drawGlyphs(forGlyphRange: glyphs, at: origin)
+        }
+        snapshotting = false
+        NSGraphicsContext.current = previous
+        guard let image = context.makeImage() else { return nil }
+        return (image, size)
+    }
+
+    /// Hides or shows a table's text-view drawing (during a live scroll).
+    func setTableHidden(_ hidden: Bool, at location: Int) {
+        guard let textStorage, let table = tableBlock(at: location) else { return }
+        let key = ObjectIdentifier(textStorage)
+        if hidden { hiddenTables[key, default: []].insert(table.range.location) }
+        else { hiddenTables[key]?.remove(table.range.location) }
+        invalidateDisplay(forCharacterRange: table.range)
     }
 
     /// Scrolls the table holding `charIndex` just enough to show it.
@@ -195,10 +243,12 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
         let placement = Placement(storage: ObjectIdentifier(storage), generation: layout.editGeneration,
                                   size: textView.bounds.size, inset: textView.textContainerInset)
         if placement == placed {
-            for (location, view) in views { view.setOffset(layout.tableOffset(at: location, in: storage)) }
+            for (location, view) in views where !view.isLive { view.setOffset(layout.tableOffset(at: location, in: storage)) }
             return
         }
         placed = placement
+        // The text changed under a live scroll: settle it before re-placing.
+        views.values.filter(\.isLive).forEach { $0.endLiveScroll() }
         var frames: [Int: (frame: NSRect, width: CGFloat)] = [:]
         let all = NSRange(location: 0, length: storage.length)
         storage.enumerateAttribute(.mdTable, in: all) { value, range, _ in
@@ -221,6 +271,7 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
             frames[table.range.location] = (NSRect(x: left, y: top, width: limits.view, height: bottom - top + below), width)
         }
         for (location, view) in views where frames[location] == nil {
+            layout.setTableHidden(false, at: location)
             view.removeFromSuperview()
             views[location] = nil
         }
@@ -234,6 +285,29 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
             view.onScroll = { [weak self, weak layout] x in
                 guard let layout, let key = self?.location(of: view) else { return }
                 layout.setTableOffset(x, forTableAt: key)
+            }
+            // A swipe slides a snapshot of the whole table natively; the
+            // text view's table hides meanwhile and catches up at the end.
+            view.onLiveBegin = { [weak self, weak layout, weak textView] in
+                guard let layout, let textView, let key = self?.location(of: view),
+                      let snapshot = layout.tableSnapshot(at: key, scale: textView.window?.backingScaleFactor ?? 2,
+                                                          appearance: textView.effectiveAppearance) else { return false }
+                view.showSnapshot(snapshot.image, size: snapshot.size)
+                // Diagnostics: the snapshot beside the scroll log.
+                if AppState.isTesting, let log = ProcessInfo.processInfo.environment["CATALOG_SCROLL_LOG"],
+                   let data = NSBitmapImageRep(cgImage: snapshot.image).representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: log + ".table.png"))
+                }
+                layout.setTableHidden(true, at: key)
+                return true
+            }
+            view.onLiveEnd = { [weak self, weak layout, weak textView] x in
+                guard let layout, let key = self?.location(of: view) else { view.removeSnapshot(); return }
+                layout.setTableHidden(false, at: key)
+                layout.setTableOffset(x, forTableAt: key)
+                // Draw the settled table under the snapshot, then drop it.
+                textView?.displayIfNeeded()
+                DispatchQueue.main.async { view.removeSnapshot() }
             }
             if view.frame != placement.frame { view.frame = placement.frame }
             view.setContentWidth(placement.width)
@@ -255,6 +329,14 @@ final class TableScrollView: NSScrollView {
     /// The overlay scroller's thickness, which hangs below the table.
     static let scrollerHeight = NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay)
     var onScroll: ((CGFloat) -> Void)?
+    /// A swipe began: show a snapshot and stop driving the layout per tick
+    /// (false when no snapshot could be made, so ticks drive it as before).
+    var onLiveBegin: (() -> Bool)?
+    /// The swipe and its momentum ended at this offset.
+    var onLiveEnd: ((CGFloat) -> Void)?
+    private(set) var isLive = false
+    private var pendingEnd: DispatchWorkItem?
+    private var snapshotView: NSView?
     private weak var textView: NSTextView?
     private var syncing = false
     private enum Axis { case undecided, horizontal, vertical }
@@ -293,8 +375,34 @@ final class TableScrollView: NSScrollView {
     }
 
     @objc private func boundsChanged() {
-        guard !syncing else { return }
+        guard !syncing, !isLive else { return }
         onScroll?(contentView.bounds.origin.x)
+    }
+
+    private func beginLiveScroll() {
+        guard !isLive else { return }
+        isLive = onLiveBegin?() ?? false
+    }
+
+    func endLiveScroll() {
+        pendingEnd?.cancel()
+        pendingEnd = nil
+        guard isLive else { return }
+        isLive = false
+        onLiveEnd?(contentView.bounds.origin.x)
+    }
+
+    func showSnapshot(_ image: CGImage, size: NSSize) {
+        removeSnapshot()
+        let view = SnapshotView(frame: NSRect(origin: .zero, size: size))
+        view.layer?.contents = image
+        documentView?.addSubview(view)
+        snapshotView = view
+    }
+
+    func removeSnapshot() {
+        snapshotView?.removeFromSuperview()
+        snapshotView = nil
     }
 
     /// A gesture's first movement picks its axis: sideways scrolls the
@@ -305,6 +413,11 @@ final class TableScrollView: NSScrollView {
         if discrete || event.phase == .began || event.phase == .mayBegin { axis = .undecided }
         let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
         if axis == .undecided, dx != 0 || dy != 0 { axis = abs(dx) > abs(dy) ? .horizontal : .vertical }
+        if axis == .horizontal, !discrete {
+            if event.phase == .began || event.phase == .changed { beginLiveScroll() }
+            // Momentum follows the lift-off almost at once if it's coming.
+            if event.momentumPhase == .began { pendingEnd?.cancel(); pendingEnd = nil }
+        }
         switch axis {
         case .horizontal: super.scrollWheel(with: event)
         case .vertical: page?.scrollWheel(with: event)
@@ -312,8 +425,28 @@ final class TableScrollView: NSScrollView {
             super.scrollWheel(with: event)
             page?.scrollWheel(with: event)
         }
+        if event.momentumPhase == .ended || event.momentumPhase == .cancelled || event.phase == .cancelled {
+            endLiveScroll()
+        } else if event.phase == .ended, isLive {
+            let end = DispatchWorkItem { [weak self] in self?.endLiveScroll() }
+            pendingEnd = end
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: end)
+        }
         if discrete || event.momentumPhase == .ended || event.momentumPhase == .cancelled { axis = .undecided }
     }
+}
+
+/// A table's snapshot, sliding with the scroll view's document during a
+/// live scroll; clicks fall through to the document beneath.
+private final class SnapshotView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The table scroll view's document: transparent, sending clicks, drags
