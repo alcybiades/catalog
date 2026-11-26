@@ -1041,6 +1041,21 @@ do {
     tv.setSelectedRange(NSRange(location: (tv.string as NSString).range(of: "cell 1 ").location + 2, length: 0))
     tv.tableScrollers.update()
     check("the caret moving the table moves its scroll view", "\(overlay?.contentView.bounds.origin.x ?? -1)", "0.0")
+    // Scrolling a table always asks for its redraw, even though its rows'
+    // layout is stale at that moment.
+    let redrawWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+    redrawWindow.contentView = scroll
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 0))
+    tv.display()
+    checkTrue("the note starts fully drawn", !tv.needsDisplay)
+    layout.setTableOffset(layout.tableOffset(at: header, in: tv.textStorage!) + 40, forTableAt: header)
+    checkTrue("scrolling a table asks for it to redraw", tv.needsDisplay)
+    tv.display()
+    layout.setTableHidden(true, at: header)
+    checkTrue("hiding a table for a live scroll asks for a redraw", tv.needsDisplay)
+    tv.display()
+    layout.setTableHidden(false, at: header)
+    checkTrue("showing it again asks for a redraw", tv.needsDisplay)
     let narrow = makeTV("| a | b |\n| - | - |\n| 1 | 2 |\n", caret: 0)
     narrow.rehighlight()
     checkTrue("a table that fits doesn't scroll",
