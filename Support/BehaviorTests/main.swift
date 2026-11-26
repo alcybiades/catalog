@@ -1002,6 +1002,17 @@ do {
     let before = layout.tableOffset(at: header, in: tv.textStorage!)
     tv.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "More ")
     check("an edit above the table keeps its scroll", "\(layout.tableOffset(at: header + 5, in: tv.textStorage!))", "\(before)")
+    // The page itself never scrolls sideways, whatever asks it to.
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+    scroll.contentView = VerticalClipView()
+    scroll.hasVerticalScroller = true
+    scroll.documentView = tv
+    tv.frame = NSRect(x: 0, y: 0, width: 400, height: 2000)
+    tv.scrollToVisible(NSRect(x: -900, y: 300, width: 10, height: 10))
+    check("the page stays put sideways when asked to show text off its left", "\(scroll.contentView.bounds.origin.x)", "0.0")
+    checkTrue("it still scrolls down", scroll.contentView.bounds.origin.y > 100)
+    scroll.contentView.scroll(to: NSPoint(x: 700, y: 0))
+    check("the page stays put sideways when scrolled directly", "\(scroll.contentView.constrainBoundsRect(scroll.contentView.bounds).origin.x)", "0.0")
     let narrow = makeTV("| a | b |\n| - | - |\n| 1 | 2 |\n", caret: 0)
     narrow.rehighlight()
     checkTrue("a table that fits doesn't scroll",

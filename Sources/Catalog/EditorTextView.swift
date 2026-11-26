@@ -322,31 +322,38 @@ final class EditorTextView: NSTextView {
 
     private var navigating = false
     /// A sideways swipe (or Shift-scroll) over a table wider than the page
-    /// scrolls its columns; the whole gesture, momentum included, stays
-    /// with the table it began on.
-    private var scrollingTable = false
+    /// scrolls its columns. Each gesture is decided by its first movement
+    /// and stays decided, momentum included; the page's scroll view still
+    /// sees every gesture begin and end, so it never stays mid-gesture.
+    private enum ScrollTarget { case undecided, page, table }
+    private var scrollTarget = ScrollTarget.undecided
+    private var scrollTablePoint = NSPoint.zero
 
     override func scrollWheel(with event: NSEvent) {
         let discrete = event.phase == [] && event.momentumPhase == []
-        let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-        // A gesture (or a mouse wheel's single tick) decides at its start.
-        if discrete || event.phase == .began {
+        if discrete || event.phase == .began || event.phase == .mayBegin {
             var point = convert(event.locationInWindow, from: nil)
             point.x -= textContainerOrigin.x
             point.y -= textContainerOrigin.y
             scrollTablePoint = point
-            scrollingTable = horizontal
+            scrollTarget = .undecided
         }
-        // A new gesture decides afresh; this one's momentum stays put.
-        defer { if discrete || event.momentumPhase == .ended || event.momentumPhase == .cancelled { scrollingTable = false } }
-        if scrollingTable, let tables = layoutManager as? CodeBackgroundLayoutManager {
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        let tables = layoutManager as? CodeBackgroundLayoutManager
+        if scrollTarget == .undecided, dx != 0 || dy != 0 {
+            scrollTarget = abs(dx) > abs(dy) && tables?.canScrollTable(at: scrollTablePoint) == true ? .table : .page
+        }
+        let ending = event.phase == .ended || event.phase == .cancelled
+        if scrollTarget == .table, let tables {
             let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
-            if event.scrollingDeltaX == 0 || tables.scrollTable(at: scrollTablePoint, by: -event.scrollingDeltaX * scale) { return }
-            scrollingTable = false
+            if dx != 0 { _ = tables.scrollTable(at: scrollTablePoint, by: -dx * scale) }
+            // The scroll view saw this gesture begin; let it see it end.
+            if ending { super.scrollWheel(with: event) }
+        } else if event.momentumPhase == [] || scrollTarget != .table {
+            super.scrollWheel(with: event)
         }
-        super.scrollWheel(with: event)
+        if discrete || event.momentumPhase == .ended || event.momentumPhase == .cancelled { scrollTarget = .undecided }
     }
-    private var scrollTablePoint = NSPoint.zero
 
     /// The caret before the latest selection change, for table navigation.
     private var tableCaretAnchor = 0
