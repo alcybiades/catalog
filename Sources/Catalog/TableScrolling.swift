@@ -46,7 +46,7 @@ extension CodeBackgroundLayoutManager {
         guard clamped != current else { return true }
         tableOffsets[key, default: [:]][table.range.location] = clamped == 0 ? nil : clamped
         invalidateLayout(forCharacterRange: table.range, actualCharacterRange: nil)
-        invalidateDisplay(forCharacterRange: table.range)
+        redisplayTable(table.range)
         return true
     }
 
@@ -140,7 +140,23 @@ extension CodeBackgroundLayoutManager {
         let key = ObjectIdentifier(textStorage)
         if hidden { hiddenTables[key, default: []].insert(table.range.location) }
         else { hiddenTables[key]?.remove(table.range.location) }
-        invalidateDisplay(forCharacterRange: table.range)
+        redisplayTable(table.range)
+    }
+
+    /// Lays the table's rows out now and marks their band for redraw.
+    /// `invalidateDisplay(forCharacterRange:)` alone drops the request for
+    /// rows whose layout is stale, as a just-scrolled table's always is, so
+    /// the table could vanish until something else redrew it.
+    func redisplayTable(_ range: NSRange) {
+        guard let container = textContainers.first else { return }
+        ensureLayout(forCharacterRange: range)
+        var rows = NSRect.null
+        enumerateLineFragments(forGlyphRange: glyphRange(forCharacterRange: range, actualCharacterRange: nil)) { rect, _, _, _, _ in
+            rows = rows.union(rect)
+        }
+        guard !rows.isNull, let view = container.textView else { return }
+        let top = rows.minY + view.textContainerOrigin.y
+        view.setNeedsDisplay(NSRect(x: 0, y: top - 2, width: view.bounds.width, height: rows.height + 4))
     }
 
     /// Scrolls the table holding `charIndex` just enough to show it.
@@ -415,8 +431,13 @@ final class TableScrollView: NSScrollView {
         if axis == .undecided, dx != 0 || dy != 0 { axis = abs(dx) > abs(dy) ? .horizontal : .vertical }
         if axis == .horizontal, !discrete {
             if event.phase == .began || event.phase == .changed { beginLiveScroll() }
-            // Momentum follows the lift-off almost at once if it's coming.
-            if event.momentumPhase == .began { pendingEnd?.cancel(); pendingEnd = nil }
+            // Momentum follows the lift-off almost at once if it's coming;
+            // if it comes after the swipe settled, slide a snapshot again.
+            if event.momentumPhase == .began {
+                pendingEnd?.cancel()
+                pendingEnd = nil
+                beginLiveScroll()
+            }
         }
         switch axis {
         case .horizontal: super.scrollWheel(with: event)
