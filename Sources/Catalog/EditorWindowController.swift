@@ -2197,6 +2197,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     // MARK: - Debug
 
+    /// Where the page, its layer and the table scrollers sit, for logs.
+    func scrollState() -> String {
+        let layerX = textView.layer?.position.x ?? -1
+        let clipLayer = scrollView.contentView.layer?.bounds.origin.x ?? -1
+        var out = "clip=\(scrollView.contentView.bounds.origin) textView=\(textView.frame.origin),\(textView.frame.width) tvBounds=\(textView.bounds.origin) containerOrigin=\(textView.textContainerOrigin) svFrame=\(scrollView.frame.origin) svLayerX=\(scrollView.layer?.position.x ?? -1) layerX=\(layerX) clipLayerX=\(clipLayer)"
+        for case let table as NSScrollView in textView.subviews { out += " table@\(Int(table.frame.minY)) x=\(table.contentView.bounds.origin.x)" }
+        return out
+    }
+
     func dumpLineFragments(to path: String) {
         guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
         lm.ensureLayout(for: tc)
@@ -2204,6 +2213,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         var out = "inset=\(textView.textContainerInset) viewWidth=\(textView.bounds.width) maxTextWidth=\(Theme.maxTextWidth)\n"
         let used = lm.usedRect(for: tc)
         out += "viewHeight=\(textView.frame.height) usedHeight=\(used.height) required=\(used.height + 2 * textView.textContainerInset.height)\n"
+        // Where the page sits, to catch anything shifting it.
+        out += "scrollView=\(scrollView.frame) clip=\(scrollView.contentView.bounds) textView=\(textView.frame) container=\(tc.size)\n"
+        var ancestor: NSView? = scrollView.superview
+        while let view = ancestor { out += "  in \(type(of: view)) frame=\(view.frame) bounds=\(view.bounds)\n"; ancestor = view.superview }
+        for case let table as NSScrollView in textView.subviews {
+            out += "tableScroller frame=\(table.frame) clip=\(table.contentView.bounds) doc=\(table.documentView?.frame ?? .zero)\n"
+        }
         var glyphIndex = 0
         var prevMaxY: CGFloat = 0
         while glyphIndex < lm.numberOfGlyphs {

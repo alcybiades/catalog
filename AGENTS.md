@@ -30,7 +30,10 @@
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
   composite, glass included; `--snapshot-frames N` (`--snapshot-interval
   seconds`, default 0.1) keeps capturing as `path-f1.png`, … to catch
-  animations. `--frame x,y,w,h` sets the window frame in points from the
+  animations. `--swipe x,y,dx,dy` (test mode) sends a trackpad gesture with
+  momentum through the window at point x,y from its top-left, four seconds
+  in (after `--scroll`); with `CATALOG_SCROLL_LOG=path` each step logs where
+  the page, its text origin and each table scroller sit. `--frame x,y,w,h` sets the window frame in points from the
   primary screen's top-left; a folder path argument opens it as the workspace
   (add a note's path to show it too) and `--media` opens it in the icon
   browser; `--assistant` shows the floating panel and `--assistant-docked` the

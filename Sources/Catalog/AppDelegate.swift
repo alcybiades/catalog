@@ -90,6 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let path = value(after: "--browse") { keyController?.browse(URL(fileURLWithPath: path)) }
         // `--move-tab` runs Move Tab to New Window on the current tab.
         if args.contains("--move-tab"), let source = keyController { moveTab(from: source, at: source.current) }
+        // `--swipe x,y,dx,dy` (test mode): four seconds in (after `--scroll`), a trackpad
+        // gesture with momentum at window point x,y (from its top-left),
+        // sent through the window's own event dispatch. With
+        // `CATALOG_SCROLL_LOG=path`, each step logs where the page sits.
+        if AppState.isTesting, let parts = value(after: "--swipe")?.split(separator: ",").compactMap({ Double($0) }),
+           parts.count == 4, let window = keyController?.window {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                Self.swipe(in: window, at: NSPoint(x: parts[0], y: window.frame.height - parts[1]),
+                           dx: Int32(parts[2]), dy: Int32(parts[3]))
+            }
+        }
         // Showcase staging: `--frame x,y,w,h` in points from the primary
         // screen's top-left, `--media` for the open folder's icon browser,
         // `--transcript file.json` for a canned conversation (test mode only),
@@ -194,10 +205,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return create(.null, 1 << 3, UInt32(window.windowNumber), 1)?.takeRetainedValue()
     }
 
+    /// Scripting: a trackpad gesture (began, changes, ended, momentum)
+    /// delivered through `window.sendEvent`, as a real one is.
+    static func swipe(in window: NSWindow, at point: NSPoint, dx: Int32, dy: Int32) {
+        // A window-less event's location reads back as its window point.
+        let flipped = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)
+        var steps: [(Int64, Int64, Int32, Int32)] = [(128, 0, 0, 0), (1, 0, 0, 0)]
+        steps += Array(repeating: (2, 0, dx, dy), count: 15)
+        steps += [(4, 0, 0, 0), (0, 1, dx, dy)]
+        steps += Array(repeating: (0, 2, dx, dy), count: 8)
+        steps += [(0, 3, 0, 0)]
+        for (index, step) in steps.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.016) {
+                guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                                       wheel1: step.3, wheel2: step.2, wheel3: 0) else { return }
+                cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: step.0)
+                cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: step.1)
+                cg.location = flipped
+                if let event = NSEvent(cgEvent: cg) {
+                    window.sendEvent(event)
+                    if let path = ProcessInfo.processInfo.environment["CATALOG_SCROLL_LOG"],
+                       let log = FileHandle(forWritingAtPath: path) {
+                        log.seekToEndOfFile()
+                        let hit = window.contentView.flatMap { $0.hitTest($0.convert(event.locationInWindow, from: nil)) }
+                        let state = (window.windowController as? EditorWindowController)?.scrollState() ?? ""
+                        log.write("step \(index) dx=\(event.scrollingDeltaX) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") \(state)\n".data(using: .utf8)!)
+                    }
+                }
+            }
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search", "--snapshot-frames", "--snapshot-interval", "--frame", "--transcript"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search", "--snapshot-frames", "--snapshot-interval", "--frame", "--transcript", "--swipe"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).

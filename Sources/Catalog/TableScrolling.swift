@@ -296,6 +296,7 @@ final class TableScrollView: NSScrollView {
 /// The table scroll view's document: transparent, sending clicks, drags
 /// and context menus to the text view beneath, with the text cursor.
 private final class PassThroughView: NSView {
+    override class var isCompatibleWithResponsiveScrolling: Bool { false }
     private weak var textView: NSTextView?
     init(textView: NSTextView) {
         self.textView = textView
