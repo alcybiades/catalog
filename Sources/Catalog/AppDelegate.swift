@@ -25,7 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Scripting: `--assistant-model codex:<model>` (or claude-code:opus, claude-api, apple).
         if let index = CommandLine.arguments.firstIndex(of: "--assistant-model"), CommandLine.arguments.indices.contains(index + 1),
            let backend = AgentBackend(storageValue: CommandLine.arguments[index + 1]) {
-            AgentBackend.preferred = backend
+            // Through the store: files passed at launch open (creating the
+            // store) before this runs, so setting the preference alone is too late.
+            AgentStore.shared.choose(backend)
         }
         // Scripting: `--theme plasma|dark|dark-glass|light|light-glass|paper`.
         if let index = CommandLine.arguments.firstIndex(of: "--theme"), CommandLine.arguments.indices.contains(index + 1),
@@ -121,6 +123,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         .write(to: URL(fileURLWithPath: outPath))
                 }
                 keyController?.dumpLineFragments(to: outPath + ".layout.txt")
+                // `--snapshot-frames N` keeps capturing (`--snapshot-interval`
+                // seconds apart, 0.1 by default) as path-f1.png, …, to catch animations.
+                if let frames = value(after: "--snapshot-frames").flatMap(Int.init), frames > 0 {
+                    let interval = Double(value(after: "--snapshot-interval") ?? "") ?? 0.1
+                    for frame in 1...frames {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(frame)) {
+                            guard let image = Self.windowImage(window) else { return }
+                            let path = (outPath as NSString).deletingPathExtension + "-f\(frame).png"
+                            try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                                .write(to: URL(fileURLWithPath: path))
+                        }
+                    }
+                }
                 // Other editor windows (e.g. after --move-tab) beside it: name-2.png, …
                 let others = controllers.compactMap(\.window).filter { $0 !== window && !args.contains("--settings") }
                 for (offset, other) in others.enumerated() {
@@ -168,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Flags whose next argument is a value, not a file to open.
-    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search"]
+    static let valueFlags: Set<String> = ["--snapshot", "--snapshot-delay", "--wiki", "--ask", "--scroll", "--caret", "--assistant-model", "--theme", "--browse", "--view-zoom", "--view-caption", "--wiki-search", "--snapshot-frames", "--snapshot-interval"]
 
     /// AppKit also delivers path-like launch arguments here, including flag
     /// values such as the --snapshot output path (which doesn't exist yet).

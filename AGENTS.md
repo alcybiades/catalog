@@ -28,4 +28,9 @@
   query typed (and its suggestions) once the article loads, `--move-tab` moves
   the current tab to a new window (other windows snapshot as `path-2.png`, …), and
   `--snapshot path.png` (`--snapshot-delay seconds`) captures the window's
-  composite, glass included.
+  composite, glass included; `--snapshot-frames N` (`--snapshot-interval
+  seconds`, default 0.1) keeps capturing as `path-f1.png`, … to catch
+  animations.
+- Open notes follow their files live: to check how an outside (assistant)
+  edit animates in, launch on a fixture note with `--snapshot-frames`, wait
+  for the first snapshot, then overwrite the fixture file from the shell.

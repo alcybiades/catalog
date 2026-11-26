@@ -24,6 +24,7 @@ test:
 		Sources/Catalog/EmbeddedQuote.swift \
 		Sources/Catalog/ImageClipboard.swift \
 		Sources/Catalog/EditorTextView.swift \
+		Sources/Catalog/TextDiff.swift \
 		Support/BehaviorTests/main.swift
 	@.build/tests/behavior
 	@xcrun swiftc -D CATALOG_TESTING -o .build/tests/workspace $(filter-out Sources/Catalog/main.swift,$(SOURCES)) Support/WorkspaceTests/main.swift

@@ -9,7 +9,9 @@ Catalog is your go-to tool for browsing and editing agent filesystems natively o
 Notes render as you type, Obsidian-style. Markdown syntax is hidden except on
 the line you're editing. Click the chat button in the lower right (or press
 ⌘J) to open the assistant. It can see the open page and edit files in your
-folder, and notes reload in place as it works. Drag the panel to the window's
+folder. Its edits play into open notes as it works, typed in place and
+briefly highlighted, as one undoable step; unsaved edits of yours elsewhere
+in the note are kept. Drag the panel to the window's
 right edge to dock it as a sidebar.
 
 ### Read Wikipedia natively
