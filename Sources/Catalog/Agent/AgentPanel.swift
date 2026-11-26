@@ -233,7 +233,7 @@ struct AgentPanel: View {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Ask, or ask for changes…", text: $session.draft, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(WikiTheme.interface(size: 14))
+                    .font(font.scaled(0.86))
                     .foregroundStyle(WikiTheme.foreground)
                     .lineLimit(1...8)
                     .scrollContentBackground(.hidden)
