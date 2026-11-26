@@ -42,6 +42,9 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
     /// How far each table wider than the page is scrolled sideways, by the
     /// table's first character, per text storage (see TableScrolling.swift).
     var tableOffsets: [ObjectIdentifier: [Int: CGFloat]] = [:]
+    /// Bumped on every text or styling change, so table scrollers only
+    /// re-measure the document when something besides a scroll changed.
+    var editGeneration = 0
 
     /// Quote cards go down first, so selection and code fills draw over them.
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
@@ -70,6 +73,7 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
                                  range newCharRange: NSRange, changeInLength delta: Int,
                                  invalidatedRange invalidatedCharRange: NSRange) {
+        editGeneration += 1
         shiftTableOffsets(in: textStorage, edited: newCharRange, delta: delta)
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
                              changeInLength: delta, invalidatedRange: invalidatedCharRange)

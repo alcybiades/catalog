@@ -47,7 +47,6 @@ extension CodeBackgroundLayoutManager {
         tableOffsets[key, default: [:]][table.range.location] = clamped == 0 ? nil : clamped
         invalidateLayout(forCharacterRange: table.range, actualCharacterRange: nil)
         invalidateDisplay(forCharacterRange: table.range)
-        for view in textContainers.compactMap(\.textView) { view.needsDisplay = true }
         return true
     }
 
@@ -174,14 +173,32 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
         }
     }
 
+    /// What the scroll views' placement depends on; a table scrolling
+    /// changes none of it, so its ticks skip re-measuring the document.
+    private struct Placement: Equatable {
+        var storage: ObjectIdentifier
+        var generation: Int
+        var size: NSSize
+        var inset: NSSize
+    }
+    private var placed: Placement?
+
     /// Places a scroll view over each wide table and drops the rest.
     func update() {
         guard let textView, let layout = textView.layoutManager as? CodeBackgroundLayoutManager,
               let storage = textView.textStorage, let container = textView.textContainer else {
             views.values.forEach { $0.removeFromSuperview() }
             views = [:]
+            placed = nil
             return
         }
+        let placement = Placement(storage: ObjectIdentifier(storage), generation: layout.editGeneration,
+                                  size: textView.bounds.size, inset: textView.textContainerInset)
+        if placement == placed {
+            for (location, view) in views { view.setOffset(layout.tableOffset(at: location, in: storage)) }
+            return
+        }
+        placed = placement
         var frames: [Int: (frame: NSRect, width: CGFloat)] = [:]
         let all = NSRange(location: 0, length: storage.length)
         storage.enumerateAttribute(.mdTable, in: all) { value, range, _ in
@@ -198,7 +215,10 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
             let top = bounds.minY + table.block.topMargin + origin.y
             let bottom = bounds.maxY - table.block.bottomMargin + origin.y
             guard bottom > top else { return }
-            frames[table.range.location] = (NSRect(x: left, y: top, width: limits.view, height: bottom - top), width)
+            // The scroller sits just below the table's bottom rule, not on
+            // its last row.
+            let below = TableScrollView.scrollerHeight + 3
+            frames[table.range.location] = (NSRect(x: left, y: top, width: limits.view, height: bottom - top + below), width)
         }
         for (location, view) in views where frames[location] == nil {
             view.removeFromSuperview()
@@ -232,6 +252,8 @@ final class TableScrollers: NSObject, NSLayoutManagerDelegate {
 /// A horizontal scroll view over one table. Vertical gestures go on to the
 /// page; mouse events go through to the text view beneath.
 final class TableScrollView: NSScrollView {
+    /// The overlay scroller's thickness, which hangs below the table.
+    static let scrollerHeight = NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay)
     var onScroll: ((CGFloat) -> Void)?
     private weak var textView: NSTextView?
     private var syncing = false
@@ -245,6 +267,7 @@ final class TableScrollView: NSScrollView {
         borderType = .noBorder
         hasHorizontalScroller = true
         hasVerticalScroller = false
+        horizontalScroller?.controlSize = .small
         scrollerStyle = .overlay
         horizontalScrollElasticity = .none
         verticalScrollElasticity = .none
