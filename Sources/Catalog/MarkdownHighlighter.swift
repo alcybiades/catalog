@@ -45,6 +45,11 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
     /// Bumped on every text or styling change, so table scrollers only
     /// re-measure the document when something besides a scroll changed.
     var editGeneration = 0
+    /// Tables (by first character, per storage) whose live scroll shows a
+    /// snapshot instead, so the text view leaves them undrawn meanwhile.
+    var hiddenTables: [ObjectIdentifier: Set<Int>] = [:]
+    /// Drawing a table snapshot: whole tables, unclipped by their window.
+    var snapshotting = false
 
     /// Quote cards go down first, so selection and code fills draw over them.
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
@@ -93,6 +98,7 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
             var block = NSRange()
             textStorage.attribute(.mdTable, at: range.location, longestEffectiveRange: &block, in: all)
             guard drawn.insert(block.location).inserted else { return }
+            if !self.snapshotting, self.hiddenTables[ObjectIdentifier(textStorage)]?.contains(block.location) == true { return }
             let glyphs = self.glyphRange(forCharacterRange: block, actualCharacterRange: nil)
             var rows: [(rect: NSRect, delimiter: Bool)] = []
             self.enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, _, glyphRange, _ in
@@ -127,7 +133,7 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
                 path.stroke()
             }
             NSGraphicsContext.current?.saveGraphicsState()
-            NSBezierPath(rect: window).addClip()
+            if !self.snapshotting { NSBezierPath(rect: window).addClip() }
             shape.addClip()
             if let rule = rows.first(where: { $0.delimiter }) {
                 let y = (rule.rect.midY + origin.y).rounded() + 0.5
@@ -145,7 +151,7 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
             }
             NSGraphicsContext.current?.restoreGraphicsState()
             NSGraphicsContext.current?.saveGraphicsState()
-            NSBezierPath(rect: window.insetBy(dx: -1, dy: -1)).addClip()
+            if !self.snapshotting { NSBezierPath(rect: window.insetBy(dx: -1, dy: -1)).addClip() }
             let outline = NSBezierPath(roundedRect: frame.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
             outline.lineWidth = 1
             Theme.tableStroke.setStroke()

@@ -2202,7 +2202,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let layerX = textView.layer?.position.x ?? -1
         let clipLayer = scrollView.contentView.layer?.bounds.origin.x ?? -1
         var out = "clip=\(scrollView.contentView.bounds.origin) textView=\(textView.frame.origin),\(textView.frame.width) tvBounds=\(textView.bounds.origin) containerOrigin=\(textView.textContainerOrigin) svFrame=\(scrollView.frame.origin) svLayerX=\(scrollView.layer?.position.x ?? -1) layerX=\(layerX) clipLayerX=\(clipLayer)"
-        for case let table as NSScrollView in textView.subviews { out += " table@\(Int(table.frame.minY)) x=\(table.contentView.bounds.origin.x)" }
+        let layout = textView.layoutManager as? CodeBackgroundLayoutManager
+        for (location, table) in textView.tableScrollers.scrollViews.sorted(by: { $0.key < $1.key }) {
+            let laidOut = layout.map { $0.tableOffset(at: location, in: textView.textStorage!) } ?? -1
+            let live = (table as? TableScrollView)?.isLive == true ? " live" : ""
+            out += " table@\(Int(table.frame.minY)) x=\(table.contentView.bounds.origin.x) layout=\(laidOut)\(live)"
+        }
         return out
     }
 
