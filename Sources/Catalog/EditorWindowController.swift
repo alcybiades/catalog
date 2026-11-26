@@ -74,7 +74,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// Whether the assistant opens docked as the sidebar, else floating.
     private(set) var agentPrefersDocked = false
     private(set) var agentWidth: CGFloat = 330
-    private var reloadingFromDisk = false
+    /// Set while the assistant's text goes in, so it isn't taken for typing.
+    private var applyingOutsideEdit = false
+    /// The assistant's edit playing into the current note.
+    private var liveEdit: LiveTextAnimation?
+    /// Skips the live edit to its end when the user types or clicks.
+    private var liveEditMonitor: Any?
+    /// One per open note's file, so outside writes show up as they land.
+    private var fileWatchers: [ObjectIdentifier: FileWatcher] = [:]
 
     init(documents: [Document] = [], app: AppDelegate?) {
         self.documents = documents.isEmpty ? [Document()] : documents
@@ -440,6 +447,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func windowWillClose(_ notification: Notification) {
+        finishLiveEdit()
+        fileWatchers.removeAll()
         agent.store.detach(agent)
         wikiSearch.expanded = false
         outlineTimer?.invalidate()
@@ -560,12 +569,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let doc = currentDocument
         // The old selection may lie beyond the incoming text.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        LiveHighlight.clear(textView)
         textView.layoutManager?.replaceTextStorage(doc.storage)
         textView.rehighlight()
         let length = (doc.storage.string as NSString).length
         let sel = NSIntersectionRange(doc.selection, NSRange(location: 0, length: length))
         textView.setSelectedRange(sel.location <= length ? sel : NSRange(location: 0, length: 0))
         textView.scrollRangeToVisible(textView.selectedRange())
+        showPendingHighlight()
         refreshChrome()
         focusCurrentPage()
     }
@@ -740,8 +751,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         let doc = currentDocument
         // The old selection may lie beyond the incoming text.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        LiveHighlight.clear(textView)
         textView.layoutManager?.replaceTextStorage(doc.storage)
         textView.rehighlight()
+        showPendingHighlight()
         let length = doc.storage.length
         let selection = NSIntersectionRange(doc.selection, NSRange(location: 0, length: length))
         textView.setSelectedRange(selection.location <= length ? selection : NSRange(location: 0, length: 0))
@@ -800,6 +813,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         updateTabs()
         updateStatus()
         updateAgentContext()
+        updateFileWatchers()
         app?.sessionChanged()
     }
 
@@ -814,7 +828,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     /// tab; text-derived chrome (outline, share, word count) waits for a pause.
     func textDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextView) === textView else { return }
-        guard !reloadingFromDisk else { return }
+        guard !applyingOutsideEdit else { return }
         if !currentDocument.edited {
             currentDocument.edited = true
             window?.isDocumentEdited = true
@@ -863,6 +877,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     private func flushAutosave() {
+        finishLiveEdit()
         autosaveTimer?.invalidate()
         autosaveTimer = nil
         guard documents.indices.contains(current) else { return }
@@ -1008,9 +1023,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         agent.store.frontmost = agent
         sidebar.refresh()
         browser.refresh()
-        // Pick up edits made elsewhere (another app, an agent in a terminal)
-        // to notes that have no unsaved changes here.
-        for doc in documents where doc.kind == .markdown && !doc.edited { reloadFromDisk(doc) }
+        // Pick up edits made elsewhere (another app, an agent in a terminal).
+        for doc in documents where doc.kind == .markdown { syncFromDisk(doc) }
     }
 
     @objc func closeFolder(_ sender: Any?) {
@@ -1173,6 +1187,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if let draft = RecoveryStore.draft(forPath: url.path) {
             if draft.content != content {
                 let doc = Document(url: url, content: draft.content)
+                doc.diskText = content
                 doc.recoveryID = draft.id
                 doc.edited = true
                 return doc
@@ -1262,11 +1277,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         autosaveTimer?.invalidate()
         autosaveTimer = nil
         var ok = true
+        finishLiveEdit()
         for doc in documents where doc.edited && doc.kind == .markdown {
-            if let url = doc.url,
-               (try? doc.storage.string.write(to: url, atomically: true, encoding: .utf8)) != nil {
-                doc.edited = false
-                RecoveryStore.remove(doc)
+            if doc.url != nil, writeToDisk(doc) {
+                continue
             } else if doc.storage.length > 0 || doc.url != nil {
                 ok = RecoveryStore.write(doc) && ok
             } else {
@@ -1317,6 +1331,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             ?? currentDocument.customTitle.map { $0 + ".md" }
             ?? "untitled.md"
         if panel.runModal() == .OK, let url = panel.url {
+            if currentDocument.url != url { currentDocument.diskText = nil }
             currentDocument.url = url
             app?.addRecentFile(url)
             refreshChrome()
@@ -1326,12 +1341,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     @discardableResult
     private func saveCurrentDocument() -> Bool {
         let doc = currentDocument
-        guard doc.kind == .markdown, let url = doc.url else { return false }
+        guard doc.kind == .markdown, doc.url != nil else { return false }
         do {
-            try doc.storage.string.write(to: url, atomically: true, encoding: .utf8)
-            doc.edited = false
-            RecoveryStore.remove(doc)
-            window?.isDocumentEdited = false
+            guard writeToDisk(doc) else { throw CocoaError(.fileWriteUnknown) }
+            window?.isDocumentEdited = doc.edited
             // Saving clears only the edited mark; a new URL refreshed already.
             updateTabs()
             return true
@@ -1878,13 +1891,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         guard let url = notification.userInfo?["url"] as? URL else { return }
         for doc in documents where doc.kind == .markdown && doc.edited {
             guard let docURL = doc.url, Self.samePath(docURL, url) else { continue }
-            if doc === currentDocument {
-                flushAutosave()
-            } else if (try? doc.storage.string.write(to: docURL, atomically: true, encoding: .utf8)) != nil {
-                doc.edited = false
-                RecoveryStore.remove(doc)
-            }
+            if doc === currentDocument { flushAutosave() } else { writeToDisk(doc) }
         }
+        window?.isDocumentEdited = currentDocument.edited
+        updateTabs()
     }
 
     /// Before a message goes out, unsaved edits to named notes reach disk,
@@ -1892,17 +1902,43 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private func saveNotesForAgent() {
         commitTitleIfEditing()
         flushAutosave()
-        for doc in documents where doc.kind == .markdown && doc.edited {
-            guard let url = doc.url, (try? doc.storage.string.write(to: url, atomically: true, encoding: .utf8)) != nil else { continue }
-            doc.edited = false
-            RecoveryStore.remove(doc)
-        }
+        for doc in documents where doc.kind == .markdown && doc.edited && doc.url != nil { writeToDisk(doc) }
         window?.isDocumentEdited = currentDocument.edited
         updateTabs()
     }
 
-    /// The assistant changed files: follow moves, reload open notes, and
-    /// refresh the sidebar, so changes appear without reopening anything.
+    /// Writes a note to its file. A change made there by something else
+    /// since it was last read (the assistant's) is folded in first rather
+    /// than overwritten. Writes nothing when the file already matches.
+    @discardableResult
+    private func writeToDisk(_ doc: Document) -> Bool {
+        guard doc.kind == .markdown, let url = doc.url else { return false }
+        if liveEdit?.doc === doc { finishLiveEdit() }
+        let disk = try? String(contentsOf: url, encoding: .utf8)
+        if let base = doc.diskText, let disk, disk != base, disk != doc.storage.string {
+            syncFromDisk(doc, animated: false)
+        }
+        let text = doc.storage.string
+        if disk != text {
+            let previous = doc.diskText
+            // Recorded first, so the watcher's echo of this write is a no-op.
+            doc.diskText = text
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                doc.diskText = previous
+                return false
+            }
+        } else {
+            doc.diskText = text
+        }
+        doc.edited = false
+        RecoveryStore.remove(doc)
+        return true
+    }
+
+    /// The assistant changed files: follow moves, bring open notes up to
+    /// date, and refresh the sidebar, so changes appear without reopening.
     @objc private func agentDidModifyFiles(_ notification: Notification) {
         let urls = notification.userInfo?["urls"] as? [URL] ?? []
         if let from = notification.userInfo?["from"] as? URL, let to = notification.userInfo?["to"] as? URL {
@@ -1916,46 +1952,225 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                 }
             }
         }
-        var changedCurrent = false
         // No URLs: a CLI changed files on its own, so recheck every open note.
         let everything = urls.isEmpty
-        for doc in documents {
+        for doc in documents where doc.kind == .markdown {
             guard let docURL = doc.url, everything || urls.contains(where: { Self.samePath($0, docURL) }) else { continue }
-            if everything, doc.kind == .markdown,
-               (try? String(contentsOf: docURL, encoding: .utf8)) == doc.storage.string { continue }
-            if doc.kind == .markdown { reloadFromDisk(doc) }
-            if doc === currentDocument { changedCurrent = true }
+            syncFromDisk(doc)
         }
         sidebar.refresh()
         refreshChrome()
-        if changedCurrent { flashStatus("updated by assistant") }
     }
 
-    /// Replaces a note's text with its file's, keeping it undoable when the
-    /// note is on screen. Notes with unsaved edits are left alone.
-    private func reloadFromDisk(_ doc: Document) {
-        guard doc.kind == .markdown, !doc.edited, let url = doc.url,
-              let text = try? String(contentsOf: url, encoding: .utf8), text != doc.storage.string else { return }
-        let full = NSRange(location: 0, length: doc.storage.length)
+    /// Keeps a watcher on each open note's file; outside writes (Claude
+    /// Code, Codex, another app) reach the note within a moment.
+    private func updateFileWatchers() {
+        var wanted: [ObjectIdentifier: URL] = [:]
+        for doc in documents where doc.kind == .markdown {
+            if let url = doc.url { wanted[ObjectIdentifier(doc)] = url.standardizedFileURL }
+        }
+        for (key, watcher) in fileWatchers where wanted[key] != watcher.url { fileWatchers[key] = nil }
+        for (key, url) in wanted where fileWatchers[key] == nil {
+            fileWatchers[key] = FileWatcher(url: url) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let doc = self.documents.first(where: { ObjectIdentifier($0) == key }) else { return }
+                    self.syncFromDisk(doc)
+                }
+            }
+        }
+    }
+
+    /// Brings a note up to date with its file after something else wrote
+    /// it. Unsaved edits that don't overlap the change are kept (a
+    /// three-way merge); ones that do are replaced, recoverable with Undo.
+    func syncFromDisk(_ doc: Document, animated: Bool = true) {
+        guard doc.kind == .markdown, let url = doc.url,
+              let disk = try? String(contentsOf: url, encoding: .utf8) else { return }
+        // Already playing this version in: let it finish.
+        if let liveEdit, liveEdit.doc === doc {
+            if liveEdit.target == disk && animated { return }
+            finishLiveEdit()
+        }
+        let buffer = doc.storage.string
+        // Nothing new on disk (often the echo of our own save).
+        if disk == doc.diskText && (doc.edited || buffer == disk) { return }
+        if buffer == disk {
+            doc.diskText = disk
+            if doc.edited {
+                doc.edited = false
+                RecoveryStore.remove(doc)
+                if doc === currentDocument { window?.isDocumentEdited = false }
+                updateTabs()
+            }
+            return
+        }
+        var target = disk
+        var keepsEdits = false
+        var replacedEdits = false
+        if doc.edited {
+            if let base = doc.diskText, let merged = TextDiff.merge(base: base, mine: buffer, theirs: disk) {
+                target = merged
+                keepsEdits = merged != disk
+            } else {
+                replacedEdits = true
+            }
+        }
+        doc.diskText = disk
+        applyOutsideText(target, to: doc, animated: animated, keepsEdits: keepsEdits)
         if doc === currentDocument {
-            let selection = textView.selectedRange()
-            reloadingFromDisk = true
-            if textView.shouldChangeText(in: full, replacementString: text) {
-                doc.storage.replaceCharacters(in: full, with: text)
+            flashStatus(replacedEdits ? "changed on disk · ⌘Z restores your edits" : "updated")
+        }
+    }
+
+    /// Puts outside text into a note as one undoable step: typed in live
+    /// when the note is on screen, at once in a background tab (highlighted
+    /// when it's next shown).
+    private func applyOutsideText(_ target: String, to doc: Document, animated: Bool, keepsEdits: Bool) {
+        let onScreen = doc === currentDocument && textView.textStorage === doc.storage
+        if onScreen && animated && !browsing {
+            startLiveEdit(doc, target: target, keepsEdits: keepsEdits)
+            return
+        }
+        let original = doc.storage.string
+        guard let span = TextDiff.changedSpan(original as NSString, target as NSString) else { return }
+        let replacement = (target as NSString).substring(with: span.new)
+        replaceUndoably(doc, range: span.old, with: replacement, fromAssistant: true)
+        if onScreen {
+            textView.rehighlight()
+            LiveHighlight.fade(span.new.length > 0 ? [span.new] : [], in: textView)
+        } else if span.new.length > 0 {
+            doc.pendingHighlight = [span.new]
+        }
+        completeOutsideEdit(doc, keepsEdits: keepsEdits)
+    }
+
+    private func startLiveEdit(_ doc: Document, target: String, keepsEdits: Bool) {
+        finishLiveEdit()
+        textView.breakUndoCoalescing()
+        let animation = LiveTextAnimation(doc: doc, textView: textView, target: target, keepsEdits: keepsEdits,
+            replace: { [weak self] range, text in self?.replaceAsAssistant(range, with: text) },
+            completion: { [weak self] animation in self?.liveEditFinished(animation) })
+        liveEdit = animation
+        // Typing or clicking in the note skips to the end; scrolling stops
+        // the view following along.
+        liveEditMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .scrollWheel]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, let liveEdit = self.liveEdit, event.window === self.window else { return }
+                let inNote = self.scrollView.bounds.contains(self.scrollView.convert(event.locationInWindow, from: nil))
+                switch event.type {
+                case .scrollWheel:
+                    if inNote { liveEdit.followsEdits = false }
+                case .keyDown:
+                    let responder = self.window?.firstResponder
+                    if responder === self.textView || responder === self.titleView { self.finishLiveEdit() }
+                default:
+                    if inNote { self.finishLiveEdit() }
+                }
+            }
+            return event
+        }
+        animation.start()
+    }
+
+    /// Skips the current live edit to its end.
+    func finishLiveEdit() {
+        liveEdit?.finish()
+    }
+
+    private func liveEditFinished(_ animation: LiveTextAnimation) {
+        if let monitor = liveEditMonitor { NSEvent.removeMonitor(monitor) }
+        liveEditMonitor = nil
+        if liveEdit === animation { liveEdit = nil }
+        let doc = animation.doc
+        let final = doc.storage.string
+        // The whole edit is one undo step, back to the note as it was.
+        if final != animation.original,
+           let span = TextDiff.changedSpan(final as NSString, animation.original as NSString) {
+            let previous = (animation.original as NSString).substring(with: span.new)
+            doc.undoManager.beginUndoGrouping()
+            doc.undoManager.registerUndo(withTarget: self) { controller in
+                controller.replaceUndoably(doc, range: span.old, with: previous, fromAssistant: false)
+            }
+            doc.undoManager.setActionName("Assistant Edit")
+            doc.undoManager.endUndoGrouping()
+        }
+        if doc === currentDocument && textView.textStorage === doc.storage { textView.rehighlight() }
+        completeOutsideEdit(doc, keepsEdits: animation.keepsEdits)
+    }
+
+    private func completeOutsideEdit(_ doc: Document, keepsEdits: Bool) {
+        doc.edited = keepsEdits
+        if !keepsEdits { RecoveryStore.remove(doc) }
+        if doc === currentDocument {
+            window?.isDocumentEdited = keepsEdits
+            updatePageActions()
+            updateStatus()
+            if keepsEdits { scheduleAutosave() }
+        }
+        updateTabs()
+    }
+
+    /// One change made by the assistant's live edit: through the text view
+    /// (so styling follows), uncounted by undo and the edited mark.
+    private func replaceAsAssistant(_ range: NSRange, with text: String) {
+        guard let storage = textView.textStorage else { return }
+        let undo = currentDocument.undoManager
+        undo.disableUndoRegistration()
+        applyingOutsideEdit = true
+        if textView.shouldChangeText(in: range, replacementString: text) {
+            storage.replaceCharacters(in: range, with: text)
+            textView.didChangeText()
+        }
+        applyingOutsideEdit = false
+        undo.enableUndoRegistration()
+    }
+
+    /// Replaces text in a note, registering the reverse for undo (and redo).
+    /// From undo or redo it counts as an edit of the user's, to be saved.
+    private func replaceUndoably(_ doc: Document, range: NSRange, with text: String, fromAssistant: Bool) {
+        if liveEdit?.doc === doc { finishLiveEdit() }
+        let ns = doc.storage.string as NSString
+        guard NSMaxRange(range) <= ns.length else { return }
+        let previous = ns.substring(with: range)
+        let inverse = NSRange(location: range.location, length: (text as NSString).length)
+        let onScreen = doc === currentDocument && textView.textStorage === doc.storage
+        // Its own step, apart from any typing still coalescing.
+        if onScreen && fromAssistant { textView.breakUndoCoalescing() }
+        doc.undoManager.registerUndo(withTarget: self) { controller in
+            controller.replaceUndoably(doc, range: inverse, with: previous, fromAssistant: false)
+        }
+        doc.undoManager.setActionName("Assistant Edit")
+        if onScreen {
+            doc.undoManager.disableUndoRegistration()
+            applyingOutsideEdit = fromAssistant
+            if textView.shouldChangeText(in: range, replacementString: text) {
+                doc.storage.replaceCharacters(in: range, with: text)
                 textView.didChangeText()
             }
-            reloadingFromDisk = false
-            textView.rehighlight()
-            let length = (text as NSString).length
-            textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
-            window?.isDocumentEdited = false
+            applyingOutsideEdit = false
+            doc.undoManager.enableUndoRegistration()
+            if !fromAssistant {
+                textView.setSelectedRange(inverse)
+                textView.scrollRangeToVisible(inverse)
+            }
         } else {
-            doc.storage.replaceCharacters(in: full, with: text)
-            let length = (text as NSString).length
+            doc.storage.replaceCharacters(in: range, with: text)
+            let length = doc.storage.length
             doc.selection = NSRange(location: min(doc.selection.location, length), length: 0)
+            if !fromAssistant {
+                doc.edited = true
+                updateTabs()
+            }
         }
-        doc.edited = false
-        RecoveryStore.remove(doc)
+    }
+
+    /// Highlights what changed in a note while its tab was hidden.
+    private func showPendingHighlight() {
+        let doc = currentDocument
+        guard !doc.pendingHighlight.isEmpty else { return }
+        let ranges = doc.pendingHighlight
+        doc.pendingHighlight = []
+        LiveHighlight.fade(ranges, in: textView, hold: 0.9)
     }
 
     private func flashStatus(_ message: String) {

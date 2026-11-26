@@ -12,6 +12,12 @@ final class Document {
     /// Where the note was scrolled as it left for another window.
     var scrollOrigin: NSPoint?
     var edited = false
+    /// The file's text as last read or written here: the base for telling
+    /// an outside change (the assistant's) from unsaved edits.
+    var diskText: String?
+    /// Text an outside change put into this note while its tab was in the
+    /// background, highlighted when the tab is next shown.
+    var pendingHighlight: [NSRange] = []
     /// Title chosen before the document has a file (used as the save name).
     var customTitle: String?
     /// Names this buffer's crash-recovery draft across launches.
@@ -24,6 +30,7 @@ final class Document {
         kind = url.map(FileKind.classify) ?? .markdown
         wiki = nil
         storage = NSTextStorage(string: content, attributes: Theme.baseAttributes)
+        if url != nil { diskText = content }
     }
 
     @MainActor init(wiki page: WikiPage) {

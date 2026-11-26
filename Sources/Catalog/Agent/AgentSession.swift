@@ -477,6 +477,8 @@ final class AgentConversation: Identifiable {
                 }
                 // The CLI wrote files itself: refresh open notes and the sidebar.
                 if changedFiles { NotificationCenter.default.post(name: .agentDidModifyFiles, object: nil, userInfo: [:]) }
+            case .willModify(let url):
+                NotificationCenter.default.post(name: .agentWillModifyFile, object: nil, userInfo: ["url": url])
             case .failure(let message):
                 failure = message
             }

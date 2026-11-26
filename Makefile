@@ -25,6 +25,7 @@ test:
 		Sources/Catalog/EmbeddedQuote.swift \
 		Sources/Catalog/ImageClipboard.swift \
 		Sources/Catalog/EditorTextView.swift \
+		Sources/Catalog/TextDiff.swift \
 		Sources/Catalog/EditorTableEditing.swift \
 		Support/BehaviorTests/main.swift
 	@.build/tests/behavior

@@ -781,6 +781,8 @@ MainActor.assumeIsolated {
     let edited = awaitTask { await tools.run("edit_file", input: ["path": "Note.md", "old_text": "alpha", "new_text": "gamma"]) }
     check("agent edit succeeds", !edited.isError)
     check("unsaved edits are saved before the agent edits", (try? String(contentsOf: note, encoding: .utf8))?.hasPrefix("Draft # Title") == true)
+    // The edit plays in live; skip to its end.
+    pages.finishLiveEdit()
     check("open note reloads with the agent's edit", pages.currentDocument.storage.string.contains("gamma beta") && !pages.currentDocument.edited)
     pages.currentDocument.undoManager.undo()
     check("agent edit is undoable in the editor", pages.currentDocument.storage.string.contains("alpha beta"))
@@ -1060,6 +1062,120 @@ check("a capped caption leaves the image most of the window", cappedFrame.height
 let tinyFrame = ImageViewerLayout.imageFrame(in: CGSize(width: 100, height: 100), aspectRatio: .nan, captionHeight: 300)
 check("degenerate viewer sizes stay positive and finite",
       tinyFrame.width > 0 && tinyFrame.height > 0 && tinyFrame.width.isFinite && tinyFrame.height.isFinite)
+
+
+// MARK: - Live agent edits: open notes follow their files
+
+let liveFolder = fixture.appendingPathComponent("Live")
+try FileManager.default.createDirectory(at: liveFolder, withIntermediateDirectories: true)
+let liveNote = liveFolder.appendingPathComponent("Live.md")
+let liveOther = liveFolder.appendingPathComponent("Other.md")
+let liveOriginal = "# Field Notes\n\nThe heron waits at the edge of the reeds, perfectly still.\n\n- Morning light\n- Two herons\n\nPatience is most of the method.\n"
+let liveRewrite = "# Field Notes\n\nThe grey heron waits at the edge of the reeds, still as a post.\n\n- Morning light on the water\n- Two herons\n- A kingfisher, briefly\n\nPatience is most of the method.\n"
+try liveOriginal.write(to: liveNote, atomically: true, encoding: .utf8)
+try "Other note.\n".write(to: liveOther, atomically: true, encoding: .utf8)
+let live = EditorWindowController(app: nil)
+live.window?.setFrame(NSRect(x: 0, y: 0, width: 700, height: 600), display: false)
+check("live: open note", live.open(url: liveNote))
+let liveDoc = live.currentDocument
+func disk(_ url: URL) -> String { (try? String(contentsOf: url, encoding: .utf8)) ?? "<unreadable>" }
+/// Runs the loop until `done`, noting whether the text was ever in between.
+@discardableResult
+func spin(until done: () -> Bool, timeout: TimeInterval = 5, sawBetween: ((String) -> Void)? = nil) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !done() && Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        sawBetween?(live.textView.string)
+    }
+    return done()
+}
+
+// An outside write (as Claude Code or Codex make) reaches the open note on its own, animated.
+var intermediate = false
+try liveRewrite.write(to: liveNote, atomically: false, encoding: .utf8)
+check("live: the file watcher picks up an outside write",
+      spin(until: { live.textView.string == liveRewrite && !liveDoc.edited }, sawBetween: { text in
+          if text != liveOriginal && text != liveRewrite { intermediate = true }
+      }))
+check("live: the edit plays in through intermediate states", intermediate)
+check("live: the note ends exactly on the file", live.textView.string == disk(liveNote))
+check("live: the note isn't marked edited", !liveDoc.edited && live.window?.isDocumentEdited == false)
+check("live: styling covers the new text", live.textView.textStorage?.attribute(.font, at: (liveRewrite as NSString).length - 3, effectiveRange: nil) != nil)
+check("live: the edit is undoable", liveDoc.undoManager.canUndo && liveDoc.undoManager.undoActionName == "Assistant Edit")
+liveDoc.undoManager.undo()
+check("live: one undo restores the note as it was", live.textView.string == liveOriginal)
+check("live: undoing counts as the user's edit", liveDoc.edited)
+liveDoc.undoManager.redo()
+check("live: redo brings the edit back", live.textView.string == liveRewrite)
+spin(until: { !liveDoc.edited && disk(liveNote) == liveRewrite }, timeout: 3)
+check("live: undo and redo save like typing", disk(liveNote) == liveRewrite && !liveDoc.edited)
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// A newer version arriving mid-animation: the editor lands on the latest.
+let liveV2 = liveRewrite.replacingOccurrences(of: "Patience is most of the method.", with: "Patience, mostly. " + String(repeating: "Watch the light, not the birds. ", count: 12))
+let liveV3 = liveV2.replacingOccurrences(of: "# Field Notes", with: "# Field Notes, Revised")
+try liveV2.write(to: liveNote, atomically: true, encoding: .utf8)
+spin(until: { live.textView.string != liveRewrite }, timeout: 3)
+check("live: a long edit is still underway", live.textView.string != liveV2)
+try liveV3.write(to: liveNote, atomically: true, encoding: .utf8)
+check("live: a change mid-animation jumps to the latest", spin(until: { live.textView.string == liveV3 && !liveDoc.edited }))
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Typing skips straight to the end.
+try liveRewrite.write(to: liveNote, atomically: true, encoding: .utf8)
+spin(until: { live.textView.string != liveV3 }, timeout: 3)
+live.finishLiveEdit()
+check("live: skipping finishes the edit at once", live.textView.string == liveRewrite && !liveDoc.edited)
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Unsaved edits elsewhere in the note survive the assistant's change.
+let noteEnd = (live.textView.string as NSString).length
+live.textView.setSelectedRange(NSRange(location: noteEnd, length: 0))
+live.textView.insertText("My own line.\n", replacementRange: NSRange(location: noteEnd, length: 0))
+check("live: typing marks the note edited", liveDoc.edited)
+let liveAgent = liveRewrite.replacingOccurrences(of: "# Field Notes", with: "# Heron Notes")
+try liveAgent.write(to: liveNote, atomically: true, encoding: .utf8)
+live.syncFromDisk(liveDoc, animated: false)
+check("live: separate unsaved edits are merged with the assistant's",
+      live.textView.string == liveAgent + "My own line.\n" && liveDoc.edited)
+spin(until: { !liveDoc.edited }, timeout: 3)
+check("live: the merged note then saves", disk(liveNote) == liveAgent + "My own line.\n")
+
+// An autosave never overwrites a change it hasn't seen yet.
+let merged = live.textView.string
+live.textView.insertText("More.\n", replacementRange: NSRange(location: (merged as NSString).length, length: 0))
+let agentAgain = (merged as NSString).replacingOccurrences(of: "still as a post", with: "still as stone")
+try agentAgain.write(to: liveNote, atomically: true, encoding: .utf8)
+live.saveDocument(nil)
+check("live: saving folds in the outside change first", disk(liveNote) == agentAgain + "More.\n")
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+// Overlapping unsaved edits: the assistant's version wins, and Undo restores the user's.
+let beforeConflict = live.textView.string
+let heron = (beforeConflict as NSString).range(of: "Heron Notes")
+live.textView.setSelectedRange(heron)
+live.textView.insertText("Egret Notes", replacementRange: heron)
+let mine = live.textView.string
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+try beforeConflict.replacingOccurrences(of: "Heron Notes", with: "Bittern Notes").write(to: liveNote, atomically: true, encoding: .utf8)
+live.syncFromDisk(liveDoc, animated: false)
+check("live: a conflicting change takes the file's version", live.textView.string == disk(liveNote) && !liveDoc.edited)
+liveDoc.undoManager.undo()
+check("live: undo restores the unsaved edits it replaced", live.textView.string == mine)
+live.saveDocument(nil)
+
+// A background tab updates at once and highlights the change when shown.
+check("live: open a second note", live.open(url: liveOther, forceNewTab: true))
+let otherDoc = live.currentDocument
+live.switchTab(to: live.documents.firstIndex { $0 === liveDoc }!)
+try "Other note, changed.\n".write(to: liveOther, atomically: false, encoding: .utf8)
+check("live: a background note follows its file",
+      spin(until: { otherDoc.storage.string == "Other note, changed.\n" }) && !otherDoc.edited)
+check("live: the background change waits to be highlighted", !otherDoc.pendingHighlight.isEmpty)
+check("live: the background change is undoable", otherDoc.undoManager.canUndo)
+live.switchTab(to: live.documents.firstIndex { $0 === otherDoc }!)
+check("live: showing the tab highlights its change", otherDoc.pendingHighlight.isEmpty && live.textView.string == "Other note, changed.\n")
+live.window?.close()
 
 print(failures == 0 ? "ALL WORKSPACE TESTS PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

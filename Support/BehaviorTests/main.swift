@@ -641,6 +641,105 @@ check("the card still spans its block after an edit", (tv.string as NSString).su
       "> Quoxted line.\n> — [Guide](Guide.md)\n")
 quoteBoard.releaseGlobally()
 
+
+// MARK: - Live agent edits: diffs and their animation steps
+
+struct SeededRandom: RandomNumberGenerator {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+}
+
+var rng = SeededRandom(state: 47)
+let vocabulary = ["the", "quick", "brown", "fox", " ", " ", "\n", "\n\n", "# ", "**bold**", "- ", "> ", "`code`",
+                  "naïve", "café", "日本語", "👍🏽", "e\u{301}", "\r\n", "[link](a.md)", ".", ",", "Ünïcödé", "🇯🇵"]
+func randomText(_ count: Int) -> String {
+    (0..<count).map { _ in vocabulary.randomElement(using: &rng)! }.joined()
+}
+/// A rewrite of `text`: words swapped, cut, and added at random spots.
+func mutate(_ text: String) -> String {
+    var pieces = Array(text)
+    for _ in 0..<Int.random(in: 0...6, using: &rng) {
+        let op = Int.random(in: 0...2, using: &rng)
+        let at = pieces.isEmpty ? 0 : Int.random(in: 0...pieces.count, using: &rng)
+        switch op {
+        case 0: pieces.insert(contentsOf: Array(randomText(Int.random(in: 1...5, using: &rng))), at: at)
+        case 1 where !pieces.isEmpty && at < pieces.count:
+            pieces.removeSubrange(at..<min(pieces.count, at + Int.random(in: 1...12, using: &rng)))
+        default:
+            if !pieces.isEmpty && at < pieces.count {
+                pieces.replaceSubrange(at..<min(pieces.count, at + Int.random(in: 1...6, using: &rng)),
+                                       with: Array(randomText(Int.random(in: 1...3, using: &rng))))
+            }
+        }
+    }
+    return String(pieces)
+}
+
+var diffFailures = 0, stepFailures = 0, chunkFailures = 0, budgetFailures = 0
+for round in 0..<600 {
+    let old = round % 7 == 0 ? "" : randomText(Int.random(in: 0...80, using: &rng))
+    let new = round % 11 == 0 ? randomText(Int.random(in: 0...80, using: &rng)) : mutate(old)
+    let edits = TextDiff.edits(from: old, to: new)
+    if TextDiff.apply(edits, to: old) != new { diffFailures += 1 }
+    let steps = LiveEditPlan.steps(for: edits, in: old)
+    if LiveEditPlan.run(steps, on: old) != new { stepFailures += 1 }
+    // Every intermediate frame stays valid UTF-16: no split surrogate pairs.
+    var live = old as NSString
+    for step in steps {
+        let next = NSMutableString(string: live as String)
+        switch step {
+        case .reveal: break
+        case .delete(let range): next.deleteCharacters(in: range)
+        case .insert(let location, let text): next.insert(text, at: location)
+        }
+        live = next
+        if String(live).utf16.count != live.length || (live as String).unicodeScalars.contains(where: { $0.value == 0xFFFD }) {
+            chunkFailures += 1; break
+        }
+    }
+    if steps.count > LiveEditPlan.maxFrames * 2 { budgetFailures += 1 }
+}
+check("random edits: the diff rebuilds the target", "\(diffFailures)", "0")
+check("random edits: animation frames end exactly on the target", "\(stepFailures)", "0")
+check("random edits: frames never split a character", "\(chunkFailures)", "0")
+check("random edits: animation stays within its frame budget", "\(budgetFailures)", "0")
+
+let wordEdit = TextDiff.edits(from: "I like apple pie.\n", to: "I like banana pie.\n")
+check("a changed word retypes whole", "\(wordEdit.map { "\($0.range.location),\($0.range.length)→\($0.replacement)" })", "[\"7,5→banana\"]")
+let phrase = TextDiff.edits(from: "the quick brown fox", to: "a slow red fox")
+check("nearby word changes read as one rewrite", "\(phrase.count)", "1")
+let twoSpots = TextDiff.edits(from: "Alpha one.\n\nMiddle text stays.\n\nOmega two.\n", to: "Alpha 1.\n\nMiddle text stays.\n\nOmega 2.\n")
+check("separate changes stay separate", "\(twoSpots.map(\.replacement))", "[\"1\", \"2\"]")
+check("identical texts need no edits", "\(TextDiff.edits(from: "same", to: "same").count)", "0")
+
+// A big rewrite still finishes in the time budget, and quickly.
+let bigOld = randomText(20000), bigNew = randomText(20000)
+let started = Date()
+let bigEdits = TextDiff.edits(from: bigOld, to: bigNew)
+let bigSteps = LiveEditPlan.steps(for: bigEdits, in: bigOld)
+check("a full rewrite diffs correctly", "\(TextDiff.apply(bigEdits, to: bigOld) == bigNew)", "true")
+check("a full rewrite animates correctly", "\(LiveEditPlan.run(bigSteps, on: bigOld) == bigNew)", "true")
+check("a full rewrite fits the frame budget", "\(bigSteps.count <= LiveEditPlan.maxFrames * 2)", "true")
+check("a full rewrite plans in well under a second", "\(Date().timeIntervalSince(started) < 1.5)", "true")
+let typing = LiveEditPlan.steps(for: TextDiff.edits(from: "", to: "Hello there"), in: "")
+check("small insertions type at a natural pace", "\(typing.count)", "\(Int((11.0 / Double(LiveEditPlan.typePace)).rounded(.up)))")
+
+// Three-way merge of unsaved edits with the assistant's.
+check("merge keeps both sides' separate changes",
+      TextDiff.merge(base: "One.\n\nTwo.\n\nThree.\n", mine: "One!\n\nTwo.\n\nThree.\n", theirs: "One.\n\nTwo.\n\nThree, four.\n") ?? "nil",
+      "One!\n\nTwo.\n\nThree, four.\n")
+check("merge refuses overlapping changes",
+      TextDiff.merge(base: "I like apple pie.", mine: "I like pear pie.", theirs: "I like banana pie.") ?? "nil", "nil")
+check("merge with no local edits takes theirs", TextDiff.merge(base: "a", mine: "a", theirs: "b") ?? "nil", "b")
+check("caret after an insertion moves with it", "\(LiveEditPlan.map(10, through: .insert(location: 4, text: "abc")))", "13")
+check("caret inside a deletion lands at its start", "\(LiveEditPlan.map(6, through: .delete(NSRange(location: 4, length: 5))))", "4")
+
 // MARK: - Tables
 
 do {
