@@ -1023,6 +1023,13 @@ do {
     checkTrue("a wide table gets its own scroll view", overlay != nil && tv.tableScrollers.scrollViews.count == 1)
     checkTrue("the scroll view lies over the table, inside the page",
               (overlay?.frame.width ?? 0) <= tv.bounds.width && overlay?.superview === tv)
+    if let overlay, let table = layout.tableBlock(at: header) {
+        var rows = NSRect.null
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(forCharacterRange: table.range, actualCharacterRange: nil)) { rect, _, _, _, _ in rows = rows.union(rect) }
+        let tableBottom = rows.maxY - table.block.bottomMargin + tv.textContainerOrigin.y
+        check("its scroller hangs just below the table's bottom rule",
+              "\((overlay.frame.maxY - tableBottom).rounded())", "\((TableScrollView.scrollerHeight + 3).rounded())")
+    }
     check("its content is as wide as the table",
           "\(overlay?.documentView?.frame.width ?? 0)", "\(layout.tableBlock(at: header)?.block.edges.last ?? -1)")
     overlay?.contentView.scroll(to: NSPoint(x: 120, y: 0))
