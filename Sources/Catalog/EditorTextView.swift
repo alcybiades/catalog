@@ -186,6 +186,11 @@ final class EditorTextView: NSTextView {
     override var textContainerOrigin: NSPoint {
         var origin = super.textContainerOrigin
         origin.y += extraTopInset / 2
+        // The column's left edge is its inset, nothing else. AppKit moves
+        // the origin right to bring a negative used rect into view, and a
+        // scrolled table's rows lie shifted left: without this, the whole
+        // page slid right by the table's offset.
+        origin.x = textContainerInset.width
         return origin
     }
 
@@ -321,6 +326,12 @@ final class EditorTextView: NSTextView {
     }
 
     private var navigating = false
+    /// Off AppKit's concurrent (responsive) scrolling path: it moves the
+    /// page's layer itself mid-gesture, ahead of the clip view, so a
+    /// sideways swipe could carry the whole page off to the side however
+    /// the clip view was pinned. The opt-out lives on the document view.
+    override class var isCompatibleWithResponsiveScrolling: Bool { false }
+
     /// Wide tables scroll sideways in their own scroll views, laid over
     /// them (see TableScrolling.swift).
     lazy var tableScrollers = TableScrollers(textView: self)
