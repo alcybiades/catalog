@@ -133,6 +133,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                                   height: CGFloat.greatestFiniteMagnitude)
         textView.configure()
         textView.delegate = self
+        textView.tableScrollers.attach()
         textView.baseDirectoryProvider = { [weak self] in
             self?.currentDocument.url?.deletingLastPathComponent()
         }
@@ -478,6 +479,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
         updateInsets()
         updateSidebar()
+        textView.tableScrollers.setNeedsUpdate()
     }
 
     @objc private func scrolled() {

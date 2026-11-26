@@ -321,39 +321,9 @@ final class EditorTextView: NSTextView {
     }
 
     private var navigating = false
-    /// A sideways swipe (or Shift-scroll) over a table wider than the page
-    /// scrolls its columns. Each gesture is decided by its first movement
-    /// and stays decided, momentum included; the page's scroll view still
-    /// sees every gesture begin and end, so it never stays mid-gesture.
-    private enum ScrollTarget { case undecided, page, table }
-    private var scrollTarget = ScrollTarget.undecided
-    private var scrollTablePoint = NSPoint.zero
-
-    override func scrollWheel(with event: NSEvent) {
-        let discrete = event.phase == [] && event.momentumPhase == []
-        if discrete || event.phase == .began || event.phase == .mayBegin {
-            var point = convert(event.locationInWindow, from: nil)
-            point.x -= textContainerOrigin.x
-            point.y -= textContainerOrigin.y
-            scrollTablePoint = point
-            scrollTarget = .undecided
-        }
-        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
-        let tables = layoutManager as? CodeBackgroundLayoutManager
-        if scrollTarget == .undecided, dx != 0 || dy != 0 {
-            scrollTarget = abs(dx) > abs(dy) && tables?.canScrollTable(at: scrollTablePoint) == true ? .table : .page
-        }
-        let ending = event.phase == .ended || event.phase == .cancelled
-        if scrollTarget == .table, let tables {
-            let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
-            if dx != 0 { _ = tables.scrollTable(at: scrollTablePoint, by: -dx * scale) }
-            // The scroll view saw this gesture begin; let it see it end.
-            if ending { super.scrollWheel(with: event) }
-        } else if event.momentumPhase == [] || scrollTarget != .table {
-            super.scrollWheel(with: event)
-        }
-        if discrete || event.momentumPhase == .ended || event.momentumPhase == .cancelled { scrollTarget = .undecided }
-    }
+    /// Wide tables scroll sideways in their own scroll views, laid over
+    /// them (see TableScrolling.swift).
+    lazy var tableScrollers = TableScrollers(textView: self)
 
     /// The caret before the latest selection change, for table navigation.
     private var tableCaretAnchor = 0

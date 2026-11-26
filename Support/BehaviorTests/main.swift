@@ -1012,11 +1012,31 @@ do {
     check("the page stays put sideways when asked to show text off its left", "\(scroll.contentView.bounds.origin.x)", "0.0")
     checkTrue("it still scrolls down", scroll.contentView.bounds.origin.y > 100)
     scroll.contentView.scroll(to: NSPoint(x: 700, y: 0))
-    check("the page stays put sideways when scrolled directly", "\(scroll.contentView.constrainBoundsRect(scroll.contentView.bounds).origin.x)", "0.0")
+    check("the page stays put sideways when scrolled directly", "\(scroll.contentView.bounds.origin.x)", "0.0")
+    // Its own horizontal scroll view lies over it and drives the offset.
+    tv.frame = NSRect(x: 0, y: 0, width: 400, height: 2000)
+    tv.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 5), with: "")
+    layout.setTableOffset(0, forTableAt: header)
+    tv.tableScrollers.attach()
+    tv.tableScrollers.update()
+    let overlay = tv.tableScrollers.scrollViews[header]
+    checkTrue("a wide table gets its own scroll view", overlay != nil && tv.tableScrollers.scrollViews.count == 1)
+    checkTrue("the scroll view lies over the table, inside the page",
+              (overlay?.frame.width ?? 0) <= tv.bounds.width && overlay?.superview === tv)
+    check("its content is as wide as the table",
+          "\(overlay?.documentView?.frame.width ?? 0)", "\(layout.tableBlock(at: header)?.block.edges.last ?? -1)")
+    overlay?.contentView.scroll(to: NSPoint(x: 120, y: 0))
+    check("scrolling it scrolls the table", "\(layout.tableOffset(at: header, in: tv.textStorage!))", "120.0")
+    check("the page doesn't move", "\(scroll.contentView.bounds.origin.x)", "0.0")
+    tv.setSelectedRange(NSRange(location: (tv.string as NSString).range(of: "cell 1 ").location + 2, length: 0))
+    tv.tableScrollers.update()
+    check("the caret moving the table moves its scroll view", "\(overlay?.contentView.bounds.origin.x ?? -1)", "0.0")
     let narrow = makeTV("| a | b |\n| - | - |\n| 1 | 2 |\n", caret: 0)
     narrow.rehighlight()
     checkTrue("a table that fits doesn't scroll",
               !((narrow.layoutManager as? CodeBackgroundLayoutManager)?.setTableOffset(10, forTableAt: 0) ?? false))
+    narrow.tableScrollers.update()
+    checkTrue("a table that fits gets no scroll view", narrow.tableScrollers.scrollViews.isEmpty)
 }
 
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
