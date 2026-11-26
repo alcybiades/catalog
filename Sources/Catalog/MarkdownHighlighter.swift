@@ -39,11 +39,40 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
         }
     }
 
+    /// How far each table wider than the page is scrolled sideways, by the
+    /// table's first character, per text storage (see TableScrolling.swift).
+    var tableOffsets: [ObjectIdentifier: [Int: CGFloat]] = [:]
+
     /// Quote cards go down first, so selection and code fills draw over them.
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         drawQuoteCards(forGlyphRange: glyphsToShow, at: origin)
         drawTables(forGlyphRange: glyphsToShow, at: origin)
-        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        drawClippingTables(glyphsToShow, at: origin) { super.drawBackground(forGlyphRange: $0, at: origin) }
+    }
+
+    /// A scrolled table's rows lay out shifted left by its offset (and
+    /// widened by as much, so their right edge stays put); clicks, the
+    /// caret and selection all follow the layout.
+    override func setLineFragmentRect(_ fragmentRect: NSRect, forGlyphRange glyphRange: NSRange, usedRect: NSRect) {
+        let offset = tableOffset(forGlyphAt: glyphRange.location)
+        guard offset > 0 else {
+            super.setLineFragmentRect(fragmentRect, forGlyphRange: glyphRange, usedRect: usedRect)
+            return
+        }
+        var rect = fragmentRect
+        rect.origin.x -= offset
+        rect.size.width += offset
+        var used = usedRect
+        used.origin.x -= offset
+        super.setLineFragmentRect(rect, forGlyphRange: glyphRange, usedRect: used)
+    }
+
+    override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
+                                 range newCharRange: NSRange, changeInLength delta: Int,
+                                 invalidatedRange invalidatedCharRange: NSRange) {
+        shiftTableOffsets(in: textStorage, edited: newCharRange, delta: delta)
+        super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
+                             changeInLength: delta, invalidatedRange: invalidatedCharRange)
     }
 
     /// Each table's grid: a rounded frame as wide as its columns, a washed
@@ -70,18 +99,21 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
             }
             guard let first = rows.first, let last = rows.last else { return }
             let padding = textContainer.lineFragmentPadding
+            // Rows of a scrolled table lie shifted left by its offset; the
+            // grid moves with them and shows through the unshifted window.
+            let offset = self.tableOffset(at: block.location, in: textStorage)
             let x0 = first.rect.minX + padding + table.baseIndent
-            let maxWidth = first.rect.maxX - padding - table.tailInset - x0
-            let clipped = tableWidth > maxWidth + 0.5
-            let width = min(tableWidth, maxWidth)
+            let viewX = x0 + offset
+            let viewWidth = first.rect.maxX - padding - table.tailInset - viewX
             let top = first.rect.minY + table.topMargin
             let bottom = last.rect.maxY - table.bottomMargin
-            guard width > 4, bottom > top else { return }
-            let frame = NSRect(x: x0, y: top, width: width, height: bottom - top).offsetBy(dx: origin.x, dy: origin.y)
+            guard viewWidth > 4, bottom > top else { return }
+            let frame = NSRect(x: x0, y: top, width: tableWidth, height: bottom - top).offsetBy(dx: origin.x, dy: origin.y)
+            let window = NSRect(x: viewX, y: top, width: min(tableWidth - offset, viewWidth), height: bottom - top)
+                .offsetBy(dx: origin.x, dy: origin.y)
             let radius = Theme.tableCornerRadius
-            // A table wider than the page runs off its edge, open there.
-            let shapeRect = clipped ? NSRect(x: frame.minX, y: frame.minY, width: frame.width + radius * 2, height: frame.height) : frame
-            let shape = NSBezierPath(roundedRect: shapeRect, xRadius: radius, yRadius: radius)
+            // A table wider than the page shows open where it runs on.
+            let shape = NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius)
             func hairline(from a: NSPoint, to b: NSPoint, color: NSColor) {
                 let path = NSBezierPath()
                 path.move(to: a)
@@ -91,6 +123,7 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
                 path.stroke()
             }
             NSGraphicsContext.current?.saveGraphicsState()
+            NSBezierPath(rect: window).addClip()
             shape.addClip()
             if let rule = rows.first(where: { $0.delimiter }) {
                 let y = (rule.rect.midY + origin.y).rounded() + 0.5
@@ -102,14 +135,23 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
                 let y = (row.rect.minY + origin.y).rounded() + 0.5
                 hairline(from: NSPoint(x: frame.minX, y: y), to: NSPoint(x: frame.maxX, y: y), color: Theme.tableRule)
             }
-            for edge in table.edges.dropFirst().dropLast() where edge < width - 1 {
+            for edge in table.edges.dropFirst().dropLast() {
                 let x = (frame.minX + edge).rounded() + 0.5
                 hairline(from: NSPoint(x: x, y: frame.minY), to: NSPoint(x: x, y: frame.maxY), color: Theme.tableRule)
             }
+            // A scroll bar along the bottom says there's more to the side.
+            if tableWidth > viewWidth + 0.5 {
+                let length = max(24, viewWidth * viewWidth / tableWidth)
+                let travel = viewWidth - length
+                let progress = min(max(offset / (tableWidth - viewWidth), 0), 1)
+                let bar = NSRect(x: window.minX + travel * progress, y: window.maxY - 6, width: length, height: 3)
+                Theme.tableStroke.setFill()
+                NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
+            }
             NSGraphicsContext.current?.restoreGraphicsState()
             NSGraphicsContext.current?.saveGraphicsState()
-            if clipped { NSBezierPath(rect: frame.insetBy(dx: -1, dy: -1)).addClip() }
-            let outline = NSBezierPath(roundedRect: shapeRect.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
+            NSBezierPath(rect: window.insetBy(dx: -1, dy: -1)).addClip()
+            let outline = NSBezierPath(roundedRect: frame.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
             outline.lineWidth = 1
             Theme.tableStroke.setStroke()
             outline.stroke()
@@ -160,8 +202,10 @@ final class CodeBackgroundLayoutManager: NSLayoutManager {
         }
     }
 
+    /// A table's text (and its selection, in drawBackground) shows only
+    /// within its frame, so a scrolled table's columns slide under its edges.
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
-        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+        drawClippingTables(glyphsToShow, at: origin) { super.drawGlyphs(forGlyphRange: $0, at: origin) }
         guard let textStorage else { return }
         let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         textStorage.enumerateAttribute(.mdImage, in: charRange) { value, range, _ in

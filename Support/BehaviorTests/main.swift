@@ -961,5 +961,52 @@ do {
     check("incremental highlighting of tables matches a full pass", mismatch ?? "", "")
 }
 
+// A table wider than the page scrolls sideways within its frame.
+do {
+    let wide = (1...12).map { "Column \($0)" }
+    let headerRow: String = "| " + wide.joined(separator: " | ") + " |"
+    let delimiterRow: String = "|" + String(repeating: " --- |", count: 12)
+    let cells: [String] = (1...12).map { "cell \($0)" }
+    let bodyRow: String = "| " + cells.joined(separator: " | ") + " |"
+    let source = "Intro\n\n\(headerRow)\n\(delimiterRow)\n\(bodyRow)\n\nAfter"
+    let layout = CodeBackgroundLayoutManager()
+    let container = NSTextContainer(size: NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude))
+    container.lineFragmentPadding = 0
+    layout.addTextContainer(container)
+    let storage = NSTextStorage()
+    storage.addLayoutManager(layout)
+    let tv = EditorTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400), textContainer: container)
+    tv.configure()
+    tv.textStorage?.setAttributedString(NSAttributedString(string: source, attributes: Theme.baseAttributes))
+    tv.rehighlight()
+    let ns = source as NSString
+    let header = ns.range(of: "| Column 1 ").location
+    func fragmentX(_ needle: String) -> CGFloat {
+        let glyph = layout.glyphIndexForCharacter(at: ns.range(of: needle).location)
+        return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minX
+    }
+    let block = layout.tableBlock(at: header)?.block
+    let limits = block.flatMap { layout.tableScrollLimits($0) }
+    checkTrue("a wide table can scroll", (limits?.maxOffset ?? 0) > 100)
+    check("an unscrolled table lays out in place", "\(fragmentX("cell 1"))", "0.0")
+    checkTrue("scrolling a table shifts its rows", layout.setTableOffset(60, forTableAt: header))
+    check("its rows lay out shifted", "\(fragmentX("cell 1"))", "-60.0")
+    check("text outside the table stays put", "\(fragmentX("After"))", "0.0")
+    layout.setTableOffset(1_000_000, forTableAt: header)
+    check("scrolling stops at the table's last column",
+          "\(layout.tableOffset(at: header, in: tv.textStorage!))", "\((limits?.maxOffset ?? 0).rounded())")
+    tv.setSelectedRange(NSRange(location: ns.range(of: "cell 1 ").location + 2, length: 0))
+    check("the caret entering a hidden cell scrolls it into view", "\(layout.tableOffset(at: header, in: tv.textStorage!))", "0.0")
+    tv.setSelectedRange(NSRange(location: ns.range(of: "cell 12").location + 3, length: 0))
+    checkTrue("the caret in the last column scrolls right", layout.tableOffset(at: header, in: tv.textStorage!) > 100)
+    let before = layout.tableOffset(at: header, in: tv.textStorage!)
+    tv.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "More ")
+    check("an edit above the table keeps its scroll", "\(layout.tableOffset(at: header + 5, in: tv.textStorage!))", "\(before)")
+    let narrow = makeTV("| a | b |\n| - | - |\n| 1 | 2 |\n", caret: 0)
+    narrow.rehighlight()
+    checkTrue("a table that fits doesn't scroll",
+              !((narrow.layoutManager as? CodeBackgroundLayoutManager)?.setTableOffset(10, forTableAt: 0) ?? false))
+}
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
