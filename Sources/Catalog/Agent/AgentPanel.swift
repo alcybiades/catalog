@@ -361,6 +361,15 @@ private struct ItemView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 28)
+        case .assistant where MarkdownBlocks.hasTable(item.text):
+            // Replies with Markdown tables show them as grids.
+            MarkdownWithTables(markdown: item.text, font: font, styled: Self.styled)
+                .contextMenu {
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(item.text, forType: .string)
+                    }
+                }
         case .assistant:
             Text(Self.styled(item.text))
                 .font(font.scaled(0.9))

@@ -363,6 +363,14 @@ enum Theme {
     static var quoteCardRule: NSColor { quoteAccent.withAlphaComponent(0.85) }
     static let quoteCardRadius: CGFloat = 10
 
+    /// Tables: a hairline grid in the text's own ink, a stronger rule under
+    /// the header, and a faint wash behind it.
+    static var tableStroke: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.17 : 0.15) }
+    static var tableRule: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.09 : 0.08) }
+    static var tableHeaderRule: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.26 : 0.22) }
+    static var tableHeaderFill: NSColor { palette.wash.withAlphaComponent(palette.isDark ? 0.05 : 0.035) }
+    static let tableCornerRadius: CGFloat = 7
+
     static let maxImageWidth: CGFloat = 440
     static let imageCornerRadius: CGFloat = 8
 
